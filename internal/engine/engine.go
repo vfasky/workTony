@@ -37,12 +37,19 @@ type Engine struct {
 	openURL  func(url string)
 	plugins  pluginSet
 
+	// runtime holds the models and credentials, read from models.json and
+	// auth.json in agentDir. The services of every directory share it, so
+	// a change made through one, as an endpoint added, reaches the chats
+	// of all. The first services own it.
+	runtime *coding.ModelRuntime
+
 	mu   sync.Mutex
 	cwd  string
 	svcs *coding.AgentSessionServices
-	// retired are the services of earlier working directories, which
-	// chats started there still use.
-	retired []func()
+	// pool holds the services of every directory chats went to, the
+	// current ones too, oldest first: chats started in a directory keep
+	// using its services until Close.
+	pool []dirServices
 
 	// modelsMu orders the changes of models.json.
 	modelsMu sync.Mutex
@@ -66,41 +73,54 @@ func Open(opts Options) (*Engine, error) {
 		return nil, err
 	}
 	e := &Engine{agentDir: agentDir, openURL: opts.OpenURL, listeners: map[int]func(){}}
-	if err := e.load(cwd); err != nil {
+	svcs, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: cwd, AgentDir: agentDir})
+	if err != nil {
 		return nil, err
 	}
+	e.runtime = svcs.ModelRuntime()
+	e.runtime.SetChangeListener(e.notify)
+	e.cwd, e.svcs = cwd, svcs
+	e.pool = []dirServices{{cwd, svcs}}
 	return e, nil
 }
 
-func (e *Engine) load(cwd string) error {
-	svcs, err := coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: cwd, AgentDir: e.agentDir})
+// dirServices are the services of a directory.
+type dirServices struct {
+	dir  string
+	svcs *coding.AgentSessionServices
+}
+
+// create makes services for dir over the shared runtime. It takes no lock:
+// creating them reads the directory's settings, which may take a while.
+func (e *Engine) create(dir string) (*coding.AgentSessionServices, error) {
+	if err := checkDir(dir); err != nil {
+		return nil, err
+	}
+	return coding.CreateAgentSessionServices(coding.CreateAgentSessionServicesOptions{CWD: dir, AgentDir: e.agentDir, ModelRuntime: e.runtime})
+}
+
+// checkDir fails unless dir is a folder.
+func checkDir(dir string) error {
+	info, err := os.Stat(dir)
 	if err != nil {
 		return err
 	}
-	svcs.ModelRuntime().SetChangeListener(e.notify)
-	e.cwd, e.svcs = cwd, svcs
+	if !info.IsDir() {
+		return errors.New(locales.ErrNotAFolder(dir))
+	}
 	return nil
 }
 
-// Close releases the services. Close chats first.
+// Close releases the services. Close chats first. A call still running,
+// as a refresh, reads the closed services.
 func (e *Engine) Close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.retire()
-	for _, release := range e.retired {
-		release()
+	// Newest first: the first services, which own the runtime, go last.
+	for i := len(e.pool) - 1; i >= 0; i-- {
+		e.pool[i].svcs.Close()
 	}
-	e.retired = nil
-}
-
-// retire moves the current services to the retired list.
-func (e *Engine) retire() {
-	svcs := e.svcs
-	if svcs == nil {
-		return
-	}
-	e.retired = append(e.retired, svcs.Close)
-	e.svcs = nil
+	e.pool = nil
 }
 
 // AgentDir is where PiG keeps its configuration.
@@ -114,30 +134,49 @@ func (e *Engine) CWD() string {
 }
 
 // SetCWD moves new chats to dir. PiG's services belong to one project
-// directory, so they are rebuilt; running chats keep theirs.
+// directory, so they are rebuilt; running chats keep theirs. Of moves made
+// at once, the one that finishes last wins: a caller that cares orders
+// them.
 func (e *Engine) SetCWD(dir string) error {
-	info, err := os.Stat(dir)
+	if e.CWD() == dir {
+		return nil
+	}
+	svcs, err := e.create(dir)
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() {
-		return errors.New(locales.ErrNotAFolder(dir))
-	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if dir == e.cwd {
-		return nil
-	}
-	svcs, cwd := e.svcs, e.cwd
-	e.retire()
-	if err := e.load(dir); err != nil {
-		// Keep the previous directory.
-		e.retired = e.retired[:len(e.retired)-1]
-		e.svcs, e.cwd = svcs, cwd
-		return err
-	}
+	e.pool = append(e.pool, dirServices{dir, svcs})
+	e.cwd, e.svcs = dir, svcs
+	e.mu.Unlock()
 	go e.notify()
 	return nil
+}
+
+// servicesIn are the services chats in dir start with: the current ones
+// for "" or the current directory, else the newest of dir, made when it
+// has none yet.
+func (e *Engine) servicesIn(dir string) (*coding.AgentSessionServices, error) {
+	e.mu.Lock()
+	if dir == "" || dir == e.cwd {
+		defer e.mu.Unlock()
+		return e.svcs, nil
+	}
+	for i := len(e.pool) - 1; i >= 0; i-- {
+		if e.pool[i].dir == dir {
+			defer e.mu.Unlock()
+			return e.pool[i].svcs, nil
+		}
+	}
+	e.mu.Unlock()
+	svcs, err := e.create(dir)
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	e.pool = append(e.pool, dirServices{dir, svcs})
+	e.mu.Unlock()
+	return svcs, nil
 }
 
 func (e *Engine) services() *coding.AgentSessionServices {

@@ -52,6 +52,15 @@
   "chatRequestFailed": "请求失败",
   "chatExtensionsFailed": "扩展加载失败：{error}",
   "chatToolReadOnly": "只读对话中不能使用 {tool}：它可能修改文件或执行命令。需要时请把工具权限切换为可修改。",
+  "chatBranchUnavailable": "无法从这条回复创建分支：对话还没有保存",
+  "chatBranchFailed": "无法创建分支对话：{error}",
+  "chatBranched": "已创建分支对话",
+  "chatOpening": "正在打开对话…",
+  "chatStillOpening": "对话还在打开，请稍候",
+  "chatOpenFailed": "无法打开对话：{error}",
+  "chatsLoadFailed": "无法读取对话列表：{error}",
+  "chatSaveFailed": "对话未能保存到侧栏：{error}",
+  "chatForgetFailed": "已关闭的对话重启后可能仍会出现：{error}",
 
   "composerPlaceholder": "给 Pi 发消息，Enter 发送，Shift+Enter 换行",
   "composerPlaceholderBusy": "补充说明会在本轮回复后发送…",
@@ -98,6 +107,10 @@
   "messageThoughts": "思考过程",
   "messageThoughtsLive": "思考中…",
   "messageOpenSettings": "前往设置",
+  "messageCopy": "复制",
+  "messageBranch": "从这里创建分支对话",
+  "messageSpeed": "{rate, number, ::.0} tok/s",
+  "messageSpeedTooltip": "输出 {tokens} 个 token，用时 {seconds, number, ::.0} 秒",
 
   "toolRead": "读取",
   "toolBash": "执行命令",
@@ -108,6 +121,11 @@
   "toolLs": "列出目录",
   "toolRunning": "运行中",
   "toolNoOutput": "（无输出）",
+  "toolWaitingOutput": "等待输出…",
+  "toolSubagent": "子代理",
+  "toolCallCount": "{count} 个调用",
+  "subagentWaiting": "等待其他子代理完成…",
+  "subagentStarting": "正在启动…",
 
   "loginConnecting": "正在连接…",
   "loginBrowserOpened": "已在浏览器中打开登录页面",
@@ -216,6 +234,7 @@
   "endpointsModelsPlaceholder": "每行一个模型 ID，例如 llama3.2",
   "endpointsFetchModels": "从服务获取模型列表",
   "endpointsFetchFailed": "获取模型列表失败: {error}",
+  "endpointsKeyNotSent": "Base URL 已更改，已保存的密钥不会发送到新地址；如需密钥，请重新输入。",
   "endpointsNoModels": "服务没有返回模型",
   "endpointsSaved": "已保存端点 {name}",
 
@@ -257,5 +276,6 @@
   "errDatabaseTooNew": "数据库版本 {version} 来自更新的 WorkTony，当前版本只认识到 {known}",
   "errProjectPathEmpty": "项目路径为空",
   "errProjectNotFound": "项目不存在",
-  "errProjectNameEmpty": "项目名称为空"
+  "errProjectNameEmpty": "项目名称为空",
+  "errChatPathEmpty": "对话没有会话文件"
 }

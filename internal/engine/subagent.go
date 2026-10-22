@@ -6,12 +6,16 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
 	"github.com/MichaelKinsy/PiG/coding/extension"
+
+	"worktony/locales"
 )
 
 const (
@@ -71,7 +75,7 @@ func (s *subagents) extension(pi extension.API) error {
 	return nil
 }
 
-func (s *subagents) execute(ctx context.Context, _ string, params json.RawMessage, _ extension.AgentToolUpdateCallback) (agent.AgentToolResult, error) {
+func (s *subagents) execute(ctx context.Context, _ string, params json.RawMessage, update extension.AgentToolUpdateCallback) (agent.AgentToolResult, error) {
 	var args struct {
 		Task string `json:"task"`
 	}
@@ -85,22 +89,29 @@ func (s *subagents) execute(ctx context.Context, _ string, params json.RawMessag
 	if parent == nil {
 		return agent.AgentToolResult{}, errors.New("the chat has not started")
 	}
+	prog := &progress{update: update}
 	select {
 	case s.slots <- struct{}{}:
-		defer func() { <-s.slots }()
-	case <-ctx.Done():
-		return agent.AgentToolResult{}, ctx.Err()
+	default:
+		prog.say(locales.SubagentWaiting())
+		select {
+		case s.slots <- struct{}{}:
+		case <-ctx.Done():
+			return agent.AgentToolResult{}, ctx.Err()
+		}
 	}
-	reply, usage, err := s.run(ctx, parent, args.Task)
+	defer func() { <-s.slots }()
+	prog.say(locales.SubagentStarting())
+	reply, usage, err := s.run(ctx, parent, args.Task, prog)
 	if err != nil {
 		return agent.AgentToolResult{}, err
 	}
 	return agent.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: reply}}, Usage: usage}, nil
 }
 
-// run runs task in a new session and returns its last reply. Cancelling ctx
-// aborts the session.
-func (s *subagents) run(ctx context.Context, parent *coding.Session, task string) (string, *ai.Usage, error) {
+// run runs task in a new session and returns its last reply, telling prog
+// what it does. Cancelling ctx aborts the session.
+func (s *subagents) run(ctx context.Context, parent *coding.Session, task string, prog *progress) (string, *ai.Usage, error) {
 	loader, err := newResourceLoader(s.svcs, nil, true)
 	if err != nil {
 		return "", nil, err
@@ -128,6 +139,7 @@ func (s *subagents) run(ctx context.Context, parent *coding.Session, task string
 	}
 	defer sess.Close()
 	sess.DiscardEvents()
+	defer sess.Subscribe(prog.onEvent)()
 	stop := context.AfterFunc(ctx, func() { _ = sess.Abort(context.Background()) })
 	defer stop()
 	if err := sess.Prompt(ctx, task); err != nil {
@@ -159,4 +171,125 @@ func subagentFailure(messages []agent.AgentMessage) string {
 		}
 	}
 	return "the sub-agent ended without a reply"
+}
+
+// progressInterval is how often, at most, a sub-agent reports the reply it
+// writes as it streams in.
+const progressInterval = 150 * time.Millisecond
+
+// progress is what a sub-agent has done so far, which its tool call
+// reports as it goes: a line for each tool it called, then the text of the
+// reply it writes. The chat shows the report in the call's card.
+type progress struct {
+	update agent.ToolUpdateCallback
+
+	// sendMu keeps the reports in order.
+	sendMu sync.Mutex
+
+	mu sync.Mutex
+	// status says what the sub-agent does before it calls a tool or writes.
+	status string
+	steps  []string
+	// calls are the steps of the tool calls, by call ID.
+	calls map[string]int
+	text  string
+	sent  time.Time
+}
+
+// say reports status.
+func (p *progress) say(status string) {
+	p.mu.Lock()
+	p.status = status
+	p.mu.Unlock()
+	p.send(true)
+}
+
+// onEvent follows the events of the sub-agent's session.
+func (p *progress) onEvent(ev agent.AgentEvent) {
+	now := true
+	p.mu.Lock()
+	switch e := ev.(type) {
+	case agent.MessageStartEvent:
+		if e.Message.Assistant == nil {
+			p.mu.Unlock()
+			return
+		}
+		p.text, now = "", false
+	case agent.MessageUpdateEvent:
+		if e.Message.Assistant == nil {
+			p.mu.Unlock()
+			return
+		}
+		p.text, now = replyText(e.Message.Assistant.Content), false
+	case agent.MessageEndEvent:
+		if e.Message.Assistant == nil {
+			p.mu.Unlock()
+			return
+		}
+		p.text = replyText(e.Message.Assistant.Content)
+	case agent.ToolExecutionStartEvent:
+		if p.calls == nil {
+			p.calls = map[string]int{}
+		}
+		p.calls[e.ToolCallID] = len(p.steps)
+		p.steps = append(p.steps, strings.TrimSpace(e.ToolName+" "+summarize(e.ToolName, e.Args)))
+	case agent.ToolExecutionEndEvent:
+		i, ok := p.calls[e.ToolCallID]
+		if !ok || !e.IsError {
+			p.mu.Unlock()
+			return
+		}
+		p.steps[i] += " ✗"
+	default:
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Unlock()
+	p.send(now)
+}
+
+// send reports the progress: at once when now, else when the last report
+// is old enough.
+func (p *progress) send(now bool) {
+	if p.update == nil {
+		return
+	}
+	p.sendMu.Lock()
+	defer p.sendMu.Unlock()
+	p.mu.Lock()
+	if !now && time.Since(p.sent) < progressInterval {
+		p.mu.Unlock()
+		return
+	}
+	p.sent = time.Now()
+	report := p.report()
+	p.mu.Unlock()
+	p.update(agent.AgentToolResult{Content: []ai.ToolResultMessageContent{ai.TextContent{Text: report}}})
+}
+
+// report is the progress as text. Hold mu.
+func (p *progress) report() string {
+	text := strings.TrimSpace(p.text)
+	if len(p.steps) == 0 && text == "" {
+		return p.status
+	}
+	report := strings.Join(p.steps, "\n")
+	if text != "" {
+		if report != "" {
+			report += "\n\n"
+		}
+		report += text
+	}
+	return report
+}
+
+// replyText is the text of a reply's blocks.
+func replyText(blocks []ai.AssistantContentBlock) string {
+	var sb strings.Builder
+	for _, b := range blocks {
+		if t, ok := b.(ai.TextContent); ok {
+			sb.WriteString(t.Text)
+		}
+	}
+	return sb.String()
 }

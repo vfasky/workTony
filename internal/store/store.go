@@ -1,6 +1,6 @@
-// Package store keeps the app's own data in SQLite: its settings and the
-// projects of the sidebar. PiG's files, as credentials, models and session
-// logs, stay where PiG keeps them. It uses modernc.org/sqlite, SQLite in
+// Package store keeps the app's own data in SQLite: its settings, the
+// projects of the sidebar and the chats it lists. PiG's files, as
+// credentials, models and session logs, stay where PiG keeps them. It uses modernc.org/sqlite, SQLite in
 // pure Go, so the app still builds without cgo.
 package store
 
@@ -34,6 +34,16 @@ var migrations = []string{
 		collapsed  INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL,
 		opened_at  INTEGER NOT NULL
+	) STRICT;`,
+	// 2: the chats of the sidebar, by their session logs.
+	`CREATE TABLE chats (
+		path       TEXT PRIMARY KEY,
+		cwd        TEXT NOT NULL,
+		title      TEXT NOT NULL,
+		branched   INTEGER NOT NULL DEFAULT 0,
+		full_tools INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
 	) STRICT;`,
 }
 
@@ -265,4 +275,60 @@ func (s *Store) OpenProject(id int64) error {
 // RemoveProject takes a project off the sidebar. Its folder stays.
 func (s *Store) RemoveProject(id int64) error {
 	return s.updateProject("DELETE FROM projects WHERE id = ?", id)
+}
+
+// Chat is a chat of the sidebar: the session log PiG writes it to, which
+// holds its messages, and what the sidebar shows of it before it opens.
+type Chat struct {
+	// Path is the session's log, a JSONL file of PiG's.
+	Path string
+	// CWD is the directory its tools work in.
+	CWD   string
+	Title string
+	// Branched is a chat that goes on from a reply of another.
+	Branched bool
+	// FullTools is a chat whose tools change files and run commands.
+	FullTools bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Chats lists the chats, the newest started first.
+func (s *Store) Chats() ([]Chat, error) {
+	rows, err := s.db.Query("SELECT path, cwd, title, branched, full_tools, created_at, updated_at FROM chats ORDER BY created_at DESC, rowid DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Chat
+	for rows.Next() {
+		var ch Chat
+		var created, updated int64
+		if err := rows.Scan(&ch.Path, &ch.CWD, &ch.Title, &ch.Branched, &ch.FullTools, &created, &updated); err != nil {
+			return nil, err
+		}
+		ch.CreatedAt, ch.UpdatedAt = time.UnixMilli(created), time.UnixMilli(updated)
+		out = append(out, ch)
+	}
+	return out, rows.Err()
+}
+
+// SaveChat adds a chat, or updates the one of its log, which keeps its
+// place.
+func (s *Store) SaveChat(ch Chat) error {
+	if ch.Path == "" {
+		return errors.New(locales.ErrChatPathEmpty())
+	}
+	t := now()
+	_, err := s.db.Exec(`INSERT INTO chats (path, cwd, title, branched, full_tools, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(path) DO UPDATE SET cwd = excluded.cwd, title = excluded.title, branched = excluded.branched,
+			full_tools = excluded.full_tools, updated_at = excluded.updated_at`,
+		ch.Path, ch.CWD, ch.Title, ch.Branched, ch.FullTools, t, t)
+	return err
+}
+
+// RemoveChat takes a chat off the sidebar. Its log stays.
+func (s *Store) RemoveChat(path string) error {
+	_, err := s.db.Exec("DELETE FROM chats WHERE path = ?", path)
+	return err
 }

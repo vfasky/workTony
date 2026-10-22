@@ -45,12 +45,12 @@ func (a *App) projectOf(dir string) *store.Project {
 }
 
 // tabDir is the directory a tab's chat works in: its chat's, or, before it
-// starts, the one new chats start in.
+// starts or opens, the one it will work in.
 func (a *App) tabDir(t *tab) string {
 	if t.chat != nil {
 		return t.chat.CWD()
 	}
-	return a.eng.CWD()
+	return t.dir
 }
 
 func samePath(x, y string) bool {
@@ -78,24 +78,60 @@ func (a *App) openProject(dir string) {
 // newChatIn shows a new chat in a project, where new chats go from then
 // on. Moving there rebuilds PiG's services, off the main thread.
 func (a *App) newChatIn(p store.Project) {
-	if samePath(p.Path, a.eng.CWD()) {
+	if a.cwdPending == 0 && samePath(p.Path, a.eng.CWD()) {
 		a.openProject(p.Path)
 		a.newTab()
 		return
 	}
+	a.switchCWD(p.Path, func(err error, latest bool) {
+		if err != nil {
+			a.chatToast = locales.ProjectOpenFailed(p.Name, err.Error())
+			return
+		}
+		a.cwdMoved(p.Path)
+		if latest {
+			a.newTabIn(p.Path)
+		}
+	})
+}
+
+// switchCWD moves new chats to dir off the main thread, then runs done on
+// it. Moves run one at a time in the order asked, so the engine ends in
+// the directory asked last, and their done functions run in that order
+// too. latest is false for a move asked for before another: what the
+// later one shows wins.
+func (a *App) switchCWD(dir string, done func(err error, latest bool)) {
+	a.cwdSeq++
+	a.cwdPending++
+	seq, prev, next := a.cwdSeq, a.cwdDone, make(chan struct{})
+	a.cwdDone = next
 	go func() {
-		err := a.eng.SetCWD(p.Path)
+		if prev != nil {
+			<-prev
+		}
+		err := a.eng.SetCWD(dir)
 		a.host.Post(func() {
-			if err != nil {
-				a.chatToast = locales.ProjectOpenFailed(p.Name, err.Error())
-				return
-			}
-			a.prefs.CWD = p.Path
-			a.savePrefs()
-			a.openProject(p.Path)
-			a.newTab()
+			a.cwdPending--
+			done(err, seq == a.cwdSeq)
 		})
+		// The next move starts once this one has posted its done, which
+		// then runs first.
+		close(next)
 	}()
+}
+
+// cwdMoved records that new chats go to dir: it is saved, it is the open
+// project, and the empty chat, which shows where new chats go, starts
+// there.
+func (a *App) cwdMoved(dir string) {
+	a.prefs.CWD = dir
+	a.savePrefs()
+	a.openProject(dir)
+	for _, t := range a.tabs {
+		if t.empty() {
+			t.dir = dir
+		}
+	}
 }
 
 func (a *App) setCollapsed(p store.Project, collapsed bool) {
@@ -278,13 +314,12 @@ func (a *App) emptyProject(c *ui.Context, p palette, pr store.Project, later *[]
 
 // chatItem is a chat's item, indented under its project.
 func (a *App) chatItem(c *ui.Context, tb *tab, indent float32, later *[]func()) {
-	title := locales.ChatNewChat()
-	if tb.chat != nil {
-		if s := tb.chat.Title(); s != "" {
-			title = s
-		}
+	title := a.tabTitle(tb)
+	ic := icMessage
+	if tb.branched {
+		ic = icBranch
 	}
-	item := ui.SidebarItem(c.Key(tb.id), tb.id, icMessage, title)
+	item := ui.SidebarItem(c.Key(tb.id), tb.id, ic, title)
 	if indent > 0 {
 		item.Padding(6, 8, 6, indent)
 	}

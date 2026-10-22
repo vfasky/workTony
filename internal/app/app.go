@@ -60,22 +60,55 @@ type App struct {
 	nextTab  int
 
 	draft     string
-	submitted string // sent with Enter, for the next frame to send
-	chatToast string // shown by the chat window's next frame
+	submitted *submission // sent with Enter, for the next frame to send
+	chatToast string      // shown by the chat window's next frame
 	picker    pickerState
 	md        markdown.Options
 
+	// cwdSeq counts the moves of new chats to another directory asked
+	// for, and cwdDone closes when the last one asked has run: each waits
+	// for the one before, so they run in the order asked. cwdPending
+	// counts those whose done has not run yet.
+	cwdSeq     int
+	cwdPending int
+	cwdDone    chan struct{}
+
 	settings settingsState
+
+	// unlisten stops the refreshes of the engine's changes.
+	unlisten func()
 }
 
-// tab is a chat in the sidebar. Its chat starts with the first message.
+// submission is a message sent with Enter, and the tab it was written in.
+type submission struct {
+	tab  string // the tab's ID
+	text string
+}
+
+// tab is a chat in the sidebar. Its chat starts with the first message,
+// or, for a chat of an earlier run, opens once shown.
 type tab struct {
-	id    string
-	chat  *engine.Chat
+	id   string
+	chat *engine.Chat
+	// dir is where the chat starts: the directory the tab shows before.
+	dir   string
 	model string // "provider/id"
 	list  ui.ListState
 	open  map[string]bool // thinking and tool parts shown open
+	// branched is a chat that goes on from a reply of another.
+	branched bool
+	// saved is the chat as the database keeps it for later runs, nil
+	// before it starts. A chat of an earlier run has it and, until it
+	// opens, no chat: opening is true while its log is read, and openErr
+	// says why it could not be.
+	saved   *store.Chat
+	opening bool
+	openErr string
 }
+
+// empty is a tab whose chat has not started: what it shows is where a new
+// chat goes.
+func (t *tab) empty() bool { return t.chat == nil && t.saved == nil }
 
 // New makes the app's state and loads its data in the background. db
 // keeps its preferences and projects; the caller closes it after Close.
@@ -96,8 +129,9 @@ func New(eng *engine.Engine, host Host, db *store.Store) *App {
 	a.loadProjects()
 	// Links in replies open in the browser, as markdown's default does.
 	a.md = markdown.Options{}
+	a.loadChats()
 	a.newTab()
-	eng.OnChange(func() { a.Refresh() })
+	a.unlisten = eng.OnChange(func() { a.Refresh() })
 	return a
 }
 
@@ -119,7 +153,7 @@ func (a *App) Refresh() {
 				a.loadErr = err.Error()
 			}
 			for _, t := range a.tabs {
-				if t.chat == nil {
+				if t.empty() {
 					t.model = a.modelFor(t.model)
 				}
 			}
@@ -136,7 +170,7 @@ func (a *App) RefreshSync() {
 	a.defModel = a.eng.DefaultModel()
 	a.loaded = true
 	for _, t := range a.tabs {
-		if t.chat == nil {
+		if t.empty() {
 			t.model = a.modelFor(t.model)
 		}
 	}
@@ -160,38 +194,73 @@ func (a *App) model(ref string) (engine.Model, bool) {
 }
 
 func (a *App) current() *tab {
-	for _, t := range a.tabs {
-		if t.id == a.selected {
-			return t
-		}
+	if t := a.tabByID(a.selected); t != nil {
+		return t
 	}
 	return a.tabs[0]
 }
 
+// tabByID is the tab of id, nil when it is closed.
+func (a *App) tabByID(id string) *tab {
+	for _, t := range a.tabs {
+		if t.id == id {
+			return t
+		}
+	}
+	return nil
+}
+
 // NewChat shows a new, empty chat, under the project new chats go to.
 func (a *App) NewChat() {
-	a.newTab()
-	if pr := a.projectOf(a.eng.CWD()); pr != nil && pr.Collapsed {
+	t := a.newTab()
+	if pr := a.projectOf(t.dir); pr != nil && pr.Collapsed {
 		a.setCollapsed(*pr, false)
 	}
 }
 
-// newTab shows a new, empty chat, reusing the empty one there is. Either
-// way it takes the default model as it is now.
-func (a *App) newTab() *tab {
+// newTab shows a new, empty chat where new chats go.
+func (a *App) newTab() *tab { return a.newTabIn(a.eng.CWD()) }
+
+// newTabIn shows a new, empty chat in dir, reusing the empty one there
+// is. Either way it takes the default model as it is now.
+func (a *App) newTabIn(dir string) *tab {
 	for _, t := range a.tabs {
-		if t.chat == nil {
+		if t.empty() {
+			t.dir = dir
 			t.model = a.modelFor("")
 			a.selected = t.id
 			return t
 		}
 	}
 	a.nextTab++
-	t := &tab{id: "chat-" + strconv.Itoa(a.nextTab), open: map[string]bool{}, model: a.modelFor("")}
+	t := &tab{id: "chat-" + strconv.Itoa(a.nextTab), dir: dir, open: map[string]bool{}, model: a.modelFor("")}
 	a.tabs = append([]*tab{t}, a.tabs...)
 	a.selected = t.id
 	a.draft = ""
 	return t
+}
+
+// branch opens a chat that goes on from the reply it of the tab's chat,
+// above it in the sidebar, and shows it. The chat it comes from stays as
+// it is.
+func (a *App) branch(from *tab, it *engine.Item) {
+	src := from.chat
+	go func() {
+		chat, err := a.eng.Branch(src, it, a.host.PostChat)
+		a.host.PostChat(func() {
+			if err != nil {
+				a.chatToast = locales.ChatBranchFailed(err.Error())
+				return
+			}
+			a.nextTab++
+			t := &tab{id: "chat-" + strconv.Itoa(a.nextTab), chat: chat, model: chat.Model().Ref, open: map[string]bool{}, branched: true}
+			i := max(slices.Index(a.tabs, from), 0)
+			a.tabs = slices.Insert(a.tabs, i, t)
+			a.selected = t.id
+			a.chatToast = locales.ChatBranched()
+			a.saveChat(t)
+		})
+	}()
 }
 
 func (a *App) closeTab(t *tab) {
@@ -202,6 +271,7 @@ func (a *App) closeTab(t *tab) {
 	if t.chat != nil {
 		t.chat.Close()
 	}
+	a.forgetChat(t)
 	a.tabs = slices.Delete(a.tabs, i, i+1)
 	if len(a.tabs) == 0 {
 		a.newTab()
@@ -219,15 +289,27 @@ func (a *App) tools() []string {
 	return engine.ReadOnlyTools
 }
 
-// send sends the draft in the current tab, starting its chat.
-func (a *App) send(c *ui.Context, text string) bool {
-	t := a.current()
-	if t.chat == nil {
+// send sends text in the tab shown now. What can run after the user moved
+// to another tab, as Enter's send in the next frame, uses sendTo.
+func (a *App) send(c *ui.Context, text string) bool { return a.sendTo(c, a.current(), text) }
+
+// sendTo sends text in the tab t, starting its chat in the tab's
+// directory.
+func (a *App) sendTo(c *ui.Context, t *tab, text string) bool {
+	if t.chat == nil && t.saved != nil {
+		a.chatToast = t.openErr
+		if a.chatToast == "" {
+			a.chatToast = locales.ChatStillOpening()
+		}
+		return false
+	}
+	started := t.chat == nil
+	if started {
 		if t.model == "" {
 			c.Toast(locales.ChatNoModel())
 			return false
 		}
-		chat, err := a.eng.NewChat(engine.ChatOptions{Model: t.model, Tools: a.tools(), Post: a.host.PostChat})
+		chat, err := a.eng.NewChat(engine.ChatOptions{Model: t.model, CWD: t.dir, Tools: a.tools(), Post: a.host.PostChat})
 		if err != nil {
 			c.Toast(locales.ChatStartFailed(err.Error()))
 			return false
@@ -236,6 +318,9 @@ func (a *App) send(c *ui.Context, text string) bool {
 	}
 	t.chat.Send(text)
 	t.list.FollowEnd = true
+	if started {
+		a.saveChat(t)
+	}
 	return true
 }
 
@@ -258,7 +343,7 @@ func (a *App) setModel(c *ui.Context, m engine.Model) {
 func (a *App) setDefaultModel(m engine.Model) {
 	a.defModel = m.Ref
 	for _, t := range a.tabs {
-		if t.chat == nil {
+		if t.empty() {
 			t.model = m.Ref
 		}
 	}
@@ -267,6 +352,7 @@ func (a *App) setDefaultModel(m engine.Model) {
 
 // Close ends the chats.
 func (a *App) Close() {
+	a.unlisten()
 	for _, t := range a.tabs {
 		if t.chat != nil {
 			t.chat.Close()

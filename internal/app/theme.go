@@ -130,6 +130,8 @@ var (
 	icSidebar  = icon("panel-left")
 	icLogOut   = icon("log-out")
 	icGlobe    = icon("globe")
+	icBranch   = icon("git-branch")
+	icBot      = icon("bot")
 )
 
 // toolIcon is the icon of a built-in tool.
@@ -145,6 +147,8 @@ func toolIcon(name string) *ui.SVG {
 		return icSearch
 	case "ls":
 		return icList
+	case "subagent":
+		return icBot
 	}
 	return icSparkles
 }

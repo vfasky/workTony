@@ -46,8 +46,9 @@ type endpointForm struct {
 	id        string
 	idTouched bool
 	baseURL   string
+	savedURL  string // the base URL of the endpoint edited
 	api       string
-	key       string
+	key       string // empty keeps the saved key
 	models    string
 	busy      bool
 	fetching  bool
@@ -338,7 +339,7 @@ func (a *App) endpointsPage(c *ui.Context, p palette) {
 				ui.Text(c, cp.BaseURL).Font("monospace").FontSize(12).TextColor(t.TextMuted).SingleLine()
 			})
 			if ui.Button(c.Key("ep-edit-"+cp.ID), locales.CommonEdit()).Clicked() {
-				a.settings.form = &endpointForm{open: true, editing: cp.ID, name: cp.Name, id: cp.ID, idTouched: true, baseURL: cp.BaseURL, api: cp.API, models: strings.Join(cp.Models, "\n")}
+				a.settings.form = &endpointForm{open: true, editing: cp.ID, name: cp.Name, id: cp.ID, idTouched: true, baseURL: cp.BaseURL, savedURL: cp.BaseURL, api: cp.API, models: strings.Join(cp.Models, "\n")}
 			}
 			if iconButton(c, "ep-del-"+cp.ID, icTrash, locales.EndpointsDelete(), p).Clicked() {
 				a.settings.deleting, a.settings.confirmDelete = cp.ID, true
@@ -497,6 +498,9 @@ func (a *App) endpointFields(c *ui.Context, f *endpointForm) {
 	})
 }
 
+// trimURL is a base URL as the engine saves it.
+func trimURL(u string) string { return strings.TrimRight(strings.TrimSpace(u), "/") }
+
 func orDash(s string) string {
 	if s == "" {
 		return "<ID>"
@@ -504,16 +508,23 @@ func orDash(s string) string {
 	return s
 }
 
+// fetchModels fills in the models of the service. An endpoint edited
+// without a new key asks with the key it has, which the engine sends only
+// to the base URL it was saved with.
 func (a *App) fetchModels(f *endpointForm) {
 	f.fetching, f.err = true, ""
-	base, key := f.baseURL, f.key
+	id, base, key := f.editing, f.baseURL, f.key
+	withheld := id != "" && strings.TrimSpace(key) == "" && trimURL(base) != trimURL(f.savedURL)
 	go func() {
-		ids, err := engine.FetchModelIDs(context.Background(), base, key)
+		ids, err := a.eng.FetchCustomModelIDs(context.Background(), id, base, key)
 		a.host.Post(func() {
 			f.fetching = false
 			switch {
 			case err != nil:
 				f.err = locales.EndpointsFetchFailed(err.Error())
+				if withheld {
+					f.err += "\n" + locales.EndpointsKeyNotSent()
+				}
 			case len(ids) == 0:
 				f.err = locales.EndpointsNoModels()
 			default:

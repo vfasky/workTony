@@ -80,6 +80,18 @@
     "description": "The result of a tool call a read-only chat refuses, which the model and the tool card show.",
     "placeholders": { "tool": { "type": "String", "example": "mcp__notes__write" } }
   },
+  "chatBranchUnavailable": "This reply can't be branched: the chat isn't saved yet",
+  "chatBranchFailed": "Can't create the branch: {error}",
+  "chatBranched": "Created a branch of the chat",
+  "@chatBranched": { "description": "A toast once a new chat that goes on from a reply of another is open." },
+  "chatOpening": "Opening the chat…",
+  "@chatOpening": { "description": "Shown while a chat of an earlier run is read from its session file." },
+  "chatStillOpening": "The chat is still opening",
+  "chatOpenFailed": "Can't open the chat: {error}",
+  "chatsLoadFailed": "Can't read the chat list: {error}",
+  "chatSaveFailed": "The chat isn't kept in the sidebar: {error}",
+  "@chatSaveFailed": { "description": "A toast when the chat started can't be saved to the list the sidebar shows after a restart." },
+  "chatForgetFailed": "The closed chat may show again after a restart: {error}",
 
   "composerPlaceholder": "Message Pi. Enter sends, Shift+Enter adds a line",
   "composerPlaceholderBusy": "Follow-ups are sent after this reply…",
@@ -134,6 +146,19 @@
   "messageThoughtsLive": "Thinking…",
   "@messageThoughtsLive": { "description": "The button that shows the model's reasoning, while it reasons." },
   "messageOpenSettings": "Open Settings",
+  "messageCopy": "Copy",
+  "@messageCopy": { "description": "The button under a reply that copies its text." },
+  "messageBranch": "Branch from here",
+  "@messageBranch": { "description": "The button under a reply that opens a new chat holding the conversation up to it." },
+  "messageSpeed": "{rate, number, ::.0} tok/s",
+  "@messageSpeed": {
+    "description": "Under a reply: the output tokens the model wrote a second.",
+    "placeholders": { "rate": { "type": "double", "example": "42.5" } }
+  },
+  "messageSpeedTooltip": "{tokens, plural, one {# output token} other {# output tokens}} in {seconds, number, ::.0} s",
+  "@messageSpeedTooltip": {
+    "placeholders": { "tokens": { "type": "int", "example": "1024" }, "seconds": { "type": "double", "example": "24.1" } }
+  },
 
   "toolRead": "Read",
   "toolBash": "Run command",
@@ -144,6 +169,16 @@
   "toolLs": "List directory",
   "toolRunning": "Running",
   "toolNoOutput": "(no output)",
+  "toolWaitingOutput": "Waiting for output…",
+  "toolSubagent": "Sub-agent",
+  "toolCallCount": "{count, plural, one {# call} other {# calls}}",
+  "@toolCallCount": {
+    "description": "In the card of a codemode script: how many tools it called.",
+    "placeholders": { "count": { "type": "int", "example": "3" } }
+  },
+  "subagentWaiting": "Waiting for another sub-agent to finish…",
+  "subagentStarting": "Starting…",
+  "@subagentStarting": { "description": "The progress of a sub-agent before it calls a tool or writes." },
 
   "loginConnecting": "Connecting…",
   "loginBrowserOpened": "Opened the sign-in page in the browser",
@@ -255,6 +290,7 @@
   "endpointsModelsPlaceholder": "One model ID per line, e.g. llama3.2",
   "endpointsFetchModels": "Get model list from the service",
   "endpointsFetchFailed": "Can't get the model list: {error}",
+  "endpointsKeyNotSent": "The base URL changed, so the saved key was not sent to it. Enter the key to use it there.",
   "endpointsNoModels": "The service returned no models",
   "endpointsSaved": "Saved endpoint {name}",
 
@@ -302,5 +338,6 @@
   },
   "errProjectPathEmpty": "The project's path is empty",
   "errProjectNotFound": "The project doesn't exist",
-  "errProjectNameEmpty": "The project's name is empty"
+  "errProjectNameEmpty": "The project's name is empty",
+  "errChatPathEmpty": "The chat has no session file"
 }

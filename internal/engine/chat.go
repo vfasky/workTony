@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -63,6 +65,9 @@ type Tool struct {
 	Output   string
 	Status   ToolStatus
 	Duration time.Duration
+	// Children are the calls the tool made to other tools, as a codemode
+	// script makes them, in the order they started.
+	Children []*Tool
 }
 
 // Part is a block of an assistant reply, in the order the model wrote it.
@@ -86,10 +91,18 @@ type Item struct {
 	Error   string
 	Aborted bool
 	Model   string
-	Tokens  int
+	// Tokens are the output tokens of a reply, 0 when the provider reports
+	// none.
+	Tokens int
+	// GenTime is how long a reply took to write, from when it started
+	// streaming to its end; 0 when unknown.
+	GenTime time.Duration
 
 	// confirmed is a user message the session has started.
 	confirmed bool
+	// stamp is the timestamp of a reply's message, which finds its entry
+	// in the session's log.
+	stamp int64
 }
 
 // ChatOptions configures a new chat.
@@ -97,6 +110,10 @@ type ChatOptions struct {
 	// Model is "provider/id".
 	Model    string
 	Thinking ai.ModelThinkingLevel
+	// CWD is the directory the chat's tools work in. Empty is the
+	// engine's CWD as it is when the chat starts; a caller that showed a
+	// directory names it, so the chat works where it said.
+	CWD string
 	// Tools are the tool names to start with; nil is ReadOnlyTools.
 	Tools []string
 	// Post runs fn on the goroutine that owns the transcript, the UI's main
@@ -134,15 +151,18 @@ type Chat struct {
 	pendingMu sync.Mutex
 	pending   *[]Part // the newest parts of the streaming reply
 	scheduled bool
+	// streamed is when the streaming reply's first update came.
+	streamed time.Time
 }
 
 // NewChat starts a chat.
 func (e *Engine) NewChat(opts ChatOptions) (*Chat, error) {
-	e.mu.Lock()
-	svcs := e.svcs
-	e.mu.Unlock()
 	if opts.Model == "" {
 		return nil, errors.New(locales.ChatNoModel())
+	}
+	svcs, err := e.servicesIn(opts.CWD)
+	if err != nil {
+		return nil, err
 	}
 	model, err := coding.BuildModel(opts.Model, svcs)
 	if err != nil {
@@ -152,6 +172,82 @@ func (e *Engine) NewChat(opts ChatOptions) (*Chat, error) {
 	if tools == nil {
 		tools = ReadOnlyTools
 	}
+	return e.startChat(svcs, model, opts.Thinking, tools, opts.Post, nil)
+}
+
+// Branch starts a chat that goes on from the reply it of the chat c: a new
+// session holding c's conversation up to the end of it, in a file of its
+// own, which leaves c as it is. post is the new chat's Post. Call it once
+// the reply has ended, off the main thread: it reads the session's file.
+func (e *Engine) Branch(c *Chat, it *Item, post func(fn func())) (*Chat, error) {
+	var id string
+	if it.Role == RoleAssistant && it.stamp != 0 && c.sess.Path() != "" {
+		id = replyEntry(c.sess.SessionManager().GetBranch(), it.stamp)
+	}
+	if id == "" {
+		return nil, errors.New(locales.ChatBranchUnavailable())
+	}
+	// The log of c is c's own: branching it would move c to the new file.
+	// The branch is made from a copy read from the file.
+	log, err := coding.SessionManagerFor(c.svcs, coding.SessionStartOptions{ResumePath: c.sess.Path()})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := log.CreateBranchedSession(id); err != nil {
+		return nil, err
+	}
+	return e.startChat(c.svcs, c.sess.Model(), c.sess.ThinkingLevel(), c.toolNames, post, log)
+}
+
+// OpenChat opens again the chat whose session's log is the file at path,
+// as a chat of an earlier run: it shows the log's messages and goes on
+// from its last one, in opts.CWD, with opts.Tools, and with the model and
+// reasoning level the log ended with. When that model is no longer
+// available it goes on with opts.Model, or else the first available. Call
+// it off the main thread: it reads the file.
+func (e *Engine) OpenChat(path string, opts ChatOptions) (*Chat, error) {
+	// PiG starts a new log at a path with none. The folder may be gone
+	// too, though services made for it before remain.
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	if opts.CWD != "" {
+		if err := checkDir(opts.CWD); err != nil {
+			return nil, err
+		}
+	}
+	svcs, err := e.servicesIn(opts.CWD)
+	if err != nil {
+		return nil, err
+	}
+	log, err := coding.SessionManagerFor(svcs, coding.SessionStartOptions{ResumePath: path})
+	if err != nil {
+		return nil, err
+	}
+	// PiG restores the log's model only for a provider signed in, not for
+	// a custom endpoint: the chat picks it from those available.
+	var logged string
+	if sel := coding.GetBranchSelection(log.GetContextBranch(), svcs.ModelRuntime().GetModel); sel != nil && !sel.Unresolvable && sel.Provider != "" && sel.ModelID != "" {
+		logged = sel.Provider + "/" + sel.ModelID
+	}
+	var model *ai.Model
+	available, _ := e.AvailableModels(context.Background())
+	if m, ok := PickModel(available, logged, opts.Model); ok {
+		if model, err = coding.BuildModel(m.Ref, svcs); err != nil {
+			return nil, err
+		}
+	}
+	tools := opts.Tools
+	if tools == nil {
+		tools = ReadOnlyTools
+	}
+	return e.startChat(svcs, model, opts.Thinking, tools, opts.Post, log)
+}
+
+// startChat starts a chat of svcs on log, a session's log whose messages
+// it shows, or on a new log when nil. A nil model is the one log ended
+// with.
+func (e *Engine) startChat(svcs *coding.AgentSessionServices, model *ai.Model, thinking ai.ModelThinkingLevel, tools []string, post func(func()), log *coding.SessionManager) (*Chat, error) {
 	plugins, subagents := newPluginLink(&e.plugins), newSubagents(svcs, tools)
 	loader, err := newResourceLoader(svcs, e.chatExtensions(svcs, plugins, subagents, readOnly(tools)), false)
 	if err != nil {
@@ -162,9 +258,10 @@ func (e *Engine) NewChat(opts ChatOptions) (*Chat, error) {
 	// through it.
 	sessOpts := coding.SessionOptions{
 		Model:                  model,
-		ThinkingLevel:          opts.Thinking,
+		ThinkingLevel:          thinking,
 		InitialActiveToolNames: append(slices.Clone(tools), codemode.ToolName),
 		ResourceLoader:         loader,
+		SessionManager:         log,
 	}
 	guard := guardReadOnly(&sessOpts, tools)
 	sess, err := newSession(svcs, sessOpts)
@@ -180,8 +277,17 @@ func (e *Engine) NewChat(opts ChatOptions) (*Chat, error) {
 	// The chat listens with Subscribe and reads nothing from Events: without
 	// this, a reply of more events than its buffer holds stops streaming.
 	sess.DiscardEvents()
-	c := &Chat{sess: sess, svcs: svcs, loader: loader, plugins: plugins, post: opts.Post, tools: map[string]*Tool{}, model: modelOf(model, e.providerNames()),
+	c := &Chat{sess: sess, svcs: svcs, loader: loader, plugins: plugins, post: post, tools: map[string]*Tool{},
 		cwd: svcs.CWD(), toolNames: slices.Clone(tools)}
+	if model == nil {
+		model = sess.Model()
+	}
+	if model != nil {
+		c.model = modelOf(model, e.providerNames())
+	}
+	if log != nil {
+		c.restore(log.GetBranch())
+	}
 	if c.post == nil {
 		var mu sync.Mutex
 		c.post = func(fn func()) {
@@ -233,6 +339,10 @@ func (c *Chat) Tools() []string { return c.sess.ActiveToolNames() }
 // CWD is the directory the chat's tools work in, which it keeps when the
 // engine moves new chats elsewhere.
 func (c *Chat) CWD() string { return c.cwd }
+
+// Path is the file of the chat's session log, which OpenChat opens again.
+// PiG writes it once the chat holds a message.
+func (c *Chat) Path() string { return c.sess.Path() }
 
 // FullTools reports whether the chat was started with tools that change
 // files or run commands.
@@ -395,6 +505,9 @@ func (c *Chat) onEvent(ev agent.AgentEvent) {
 			c.post(func() { c.userStarted(text) })
 		} else if a := e.Message.Assistant; a != nil {
 			parts := partsOf(a.Content)
+			c.pendingMu.Lock()
+			c.streamed = time.Time{}
+			c.pendingMu.Unlock()
 			c.post(func() { c.assistantStarted(parts) })
 		}
 	case agent.MessageUpdateEvent:
@@ -403,17 +516,25 @@ func (c *Chat) onEvent(ev agent.AgentEvent) {
 		}
 	case agent.MessageEndEvent:
 		if a := e.Message.Assistant; a != nil {
-			parts, stop, msg := partsOf(a.Content), a.StopReason, a.ErrorMessage
-			tokens := 0
+			end := replyEnd{parts: partsOf(a.Content), stop: a.StopReason, err: a.ErrorMessage, stamp: a.Timestamp}
 			if a.Usage != nil {
-				tokens = a.Usage.Output
+				end.tokens = a.Usage.Output
 			}
-			c.post(func() { c.assistantEnded(parts, stop, msg, tokens) })
+			c.pendingMu.Lock()
+			if !c.streamed.IsZero() {
+				end.took = time.Since(c.streamed)
+			}
+			c.streamed = time.Time{}
+			c.pendingMu.Unlock()
+			if end.took <= 0 && a.DurationMs != nil {
+				end.took = time.Duration(*a.DurationMs) * time.Millisecond
+			}
+			c.post(func() { c.assistantEnded(end) })
 		}
 	case agent.ToolExecutionStartEvent:
-		id, name, summary := e.ToolCallID, e.ToolName, summarize(e.ToolName, e.Args)
+		id, parent, name, summary := e.ToolCallID, e.ParentToolCallID, e.ToolName, summarize(e.ToolName, e.Args)
 		c.post(func() {
-			t := c.tool(id, name)
+			t := c.call(id, parent, name)
 			t.Status = ToolRunning
 			if summary != "" {
 				t.Summary = summary
@@ -421,19 +542,24 @@ func (c *Chat) onEvent(ev agent.AgentEvent) {
 			c.Version++
 		})
 	case agent.ToolExecutionUpdateEvent:
-		id, out := e.ToolCallID, e.PartialResult.Text()
+		// A codemode script's updates hold no text: the calls it makes
+		// come as events of their own, with the script as their parent.
+		id, parent, out := e.ToolCallID, e.ParentToolCallID, e.PartialResult.Text()
+		if out == "" {
+			return
+		}
 		c.post(func() {
-			c.tool(id, "").Output = out
+			c.call(id, parent, "").Output = out
 			c.Version++
 		})
 	case agent.ToolExecutionEndEvent:
-		id, out, failed := e.ToolCallID, e.Result.Text(), e.IsError
+		id, parent, out, failed := e.ToolCallID, e.ParentToolCallID, e.Result.Text(), e.IsError
 		var took time.Duration
 		if e.DurationMs != nil {
 			took = time.Duration(*e.DurationMs) * time.Millisecond
 		}
 		c.post(func() {
-			t := c.tool(id, "")
+			t := c.call(id, parent, "")
 			t.Output, t.Duration, t.Status = out, took, ToolDone
 			if failed {
 				t.Status = ToolFailed
@@ -453,6 +579,9 @@ func (c *Chat) onEvent(ev agent.AgentEvent) {
 // costs a frame, not a frame per token.
 func (c *Chat) queueParts(parts []Part) {
 	c.pendingMu.Lock()
+	if c.streamed.IsZero() {
+		c.streamed = time.Now()
+	}
 	c.pending = &parts
 	if c.scheduled {
 		c.pendingMu.Unlock()
@@ -507,7 +636,17 @@ func (c *Chat) assistantStarted(parts []Part) {
 	c.current = it
 }
 
-func (c *Chat) assistantEnded(parts []Part, stop ai.StopReason, msg string, tokens int) {
+// replyEnd is what the transcript keeps of a reply that ended.
+type replyEnd struct {
+	parts  []Part
+	stop   ai.StopReason
+	err    string
+	tokens int
+	took   time.Duration
+	stamp  int64
+}
+
+func (c *Chat) assistantEnded(end replyEnd) {
 	it := c.current
 	if it == nil {
 		it = &Item{Role: RoleAssistant, Model: c.model.Name}
@@ -516,20 +655,25 @@ func (c *Chat) assistantEnded(parts []Part, stop ai.StopReason, msg string, toke
 	c.pendingMu.Lock()
 	c.pending = nil
 	c.pendingMu.Unlock()
-	it.Parts = c.resolve(parts)
+	it.Parts = c.resolve(end.parts)
 	it.Streaming = false
-	it.Tokens = tokens
-	switch stop {
+	c.ended(it, end)
+	c.current = nil
+	c.Version++
+}
+
+// ended sets what a reply that ended says of itself.
+func (c *Chat) ended(it *Item, end replyEnd) {
+	it.Tokens, it.GenTime, it.stamp = end.tokens, end.took, end.stamp
+	switch end.stop {
 	case ai.StopReasonError:
-		it.Error = msg
+		it.Error = end.err
 		if it.Error == "" {
 			it.Error = locales.ChatRequestFailed()
 		}
 	case ai.StopReasonAborted:
 		it.Aborted = true
 	}
-	c.current = nil
-	c.Version++
 }
 
 func (c *Chat) finishCurrent() {
@@ -563,6 +707,18 @@ func (c *Chat) tool(id, name string) *Tool {
 	if t.Name == "" {
 		t.Name = name
 	}
+	return t
+}
+
+// call is the state of the tool call id, which, made by the tool call
+// parent, the parent lists among its children.
+func (c *Chat) call(id, parent, name string) *Tool {
+	if parent == "" || c.tools[id] != nil {
+		return c.tool(id, name)
+	}
+	t := c.tool(id, name)
+	p := c.tool(parent, "")
+	p.Children = append(p.Children, t)
 	return t
 }
 
@@ -602,4 +758,100 @@ func partsOf(blocks []ai.AssistantContentBlock) []Part {
 		}
 	}
 	return parts
+}
+
+// restore fills the transcript with the messages of entries, the branch of
+// a session's log the chat goes on from.
+func (c *Chat) restore(entries []coding.SessionEntry) {
+	for _, entry := range entries {
+		msg, ok := messageOf(entry)
+		if !ok {
+			continue
+		}
+		switch {
+		case msg.User != nil:
+			c.add(&Item{Role: RoleUser, Text: userText(msg.User.Content), confirmed: true})
+		case msg.Assistant != nil:
+			a := msg.Assistant
+			name := a.ModelID
+			if name == "" || name == c.model.ID {
+				name = c.model.Name
+			}
+			it := &Item{Role: RoleAssistant, Model: name, Parts: c.resolve(partsOf(a.Content))}
+			end := replyEnd{stop: a.StopReason, err: a.ErrorMessage, stamp: a.Timestamp}
+			if a.Usage != nil {
+				end.tokens = a.Usage.Output
+			}
+			if a.DurationMs != nil {
+				end.took = time.Duration(*a.DurationMs) * time.Millisecond
+			}
+			c.ended(it, end)
+			c.add(it)
+		case msg.ToolResult != nil:
+			r := msg.ToolResult
+			t := c.tool(r.ToolCallID, r.ToolName)
+			t.Output, t.Status = (agent.AgentToolResult{Content: r.Content}).Text(), ToolDone
+			if r.IsError {
+				t.Status = ToolFailed
+			}
+			if r.DurationMs != nil {
+				t.Duration = time.Duration(*r.DurationMs) * time.Millisecond
+			}
+			if r.NestedCalls != nil {
+				for _, call := range r.NestedCalls.Calls {
+					child := c.call(call.ID, t.ID, call.Name)
+					child.Summary, child.Status, child.Output = summarizeObject(call.Name, call.Arguments), ToolDone, call.Error
+					if call.Status != ai.NestedToolCallOK {
+						child.Status = ToolFailed
+					}
+					if call.DurationMs != nil {
+						child.Duration = time.Duration(*call.DurationMs) * time.Millisecond
+					}
+				}
+			}
+		}
+	}
+}
+
+// messageOf is the message of a message entry of a session's log.
+func messageOf(entry coding.SessionEntry) (agent.AgentMessage, bool) {
+	var msg agent.AgentMessage
+	if entry.Base().Type != "message" {
+		return msg, false
+	}
+	raw, err := entry.MarshalJSON()
+	if err != nil {
+		return msg, false
+	}
+	var record struct {
+		Message json.RawMessage `json:"message"`
+	}
+	if json.Unmarshal(raw, &record) != nil || json.Unmarshal(record.Message, &msg) != nil {
+		return msg, false
+	}
+	return msg, true
+}
+
+// replyEntry is the ID of the entry of entries that holds the reply whose
+// message has the timestamp stamp, "" when none does.
+func replyEntry(entries []coding.SessionEntry, stamp int64) string {
+	for _, entry := range slices.Backward(entries) {
+		if entry.Base().Type != "message" {
+			continue
+		}
+		raw, err := entry.MarshalJSON()
+		if err != nil {
+			continue
+		}
+		var record struct {
+			Message struct {
+				Role      string `json:"role"`
+				Timestamp int64  `json:"timestamp"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(raw, &record) == nil && record.Message.Role == "assistant" && record.Message.Timestamp == stamp {
+			return entry.Base().ID
+		}
+	}
+	return ""
 }

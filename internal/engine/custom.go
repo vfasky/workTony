@@ -71,9 +71,17 @@ func (e *Engine) readModels() (*modelsFile, error) {
 	if err := json.Unmarshal(b, &f.rest); err != nil {
 		return nil, fmt.Errorf("%s: %w", locales.ErrModelsJSONInvalid(), err)
 	}
+	// Unmarshal takes null for no map at all: a file of null, or providers
+	// of null, has none.
+	if f.rest == nil {
+		f.rest = map[string]json.RawMessage{}
+	}
 	if raw, ok := f.rest["providers"]; ok {
 		if err := json.Unmarshal(raw, &f.providers); err != nil {
 			return nil, fmt.Errorf("%s: %w", locales.ErrModelsJSONProviders(), err)
+		}
+		if f.providers == nil {
+			f.providers = map[string]map[string]any{}
 		}
 	}
 	return f, nil
@@ -126,7 +134,8 @@ func (e *Engine) editModels(edit func(f *modelsFile) error, committed func() err
 		return err
 	}
 	// The embedded registry's Refresh reloads models.json from disk; the
-	// facade's refreshes catalogs only.
+	// facade's refreshes catalogs only. The services of every directory
+	// share the registry, so the chats of each see the change.
 	e.services().Registry().ModelRegistry.Refresh()
 	if committed != nil {
 		return committed()
@@ -169,7 +178,7 @@ func (e *Engine) CustomProviders() ([]CustomProvider, error) {
 // and models that the form does not edit are kept.
 func (e *Engine) SaveCustomProvider(ctx context.Context, p CustomProvider, apiKey string) error {
 	p.ID = strings.TrimSpace(strings.ToLower(p.ID))
-	p.BaseURL = strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
+	p.BaseURL = trimBaseURL(p.BaseURL)
 	if !providerIDPattern.MatchString(p.ID) {
 		return errors.New(locales.ErrEndpointID())
 	}
@@ -274,12 +283,44 @@ func (e *Engine) reloadModels() {
 	e.notify()
 }
 
+func trimBaseURL(u string) string { return strings.TrimRight(strings.TrimSpace(u), "/") }
+
+// FetchCustomModelIDs asks the service at baseURL for its models, for the
+// form of endpoint id, "" for a new one. It sends apiKey or, when that is
+// empty, the key the endpoint is used with, but only to the base URL the
+// endpoint has: a key is never sent to another service than its own.
+func (e *Engine) FetchCustomModelIDs(ctx context.Context, id, baseURL, apiKey string) ([]string, error) {
+	key := strings.TrimSpace(apiKey)
+	if key == "" && id != "" {
+		key = e.savedKey(ctx, id, baseURL)
+	}
+	return FetchModelIDs(ctx, baseURL, key)
+}
+
+// savedKey is the key endpoint id is used with, as chats resolve it, when
+// baseURL is the endpoint's; "" otherwise.
+func (e *Engine) savedKey(ctx context.Context, id, baseURL string) string {
+	list, err := e.CustomProviders()
+	if err != nil {
+		return ""
+	}
+	i := slices.IndexFunc(list, func(p CustomProvider) bool { return p.ID == id })
+	if i < 0 || trimBaseURL(list[i].BaseURL) != trimBaseURL(baseURL) {
+		return ""
+	}
+	auth, err := e.runtime.GetAuth(ctx, id)
+	if err != nil || auth == nil || auth.Auth.APIKey == keylessKey {
+		return ""
+	}
+	return auth.Auth.APIKey
+}
+
 // FetchModelIDs asks an OpenAI-compatible endpoint for its models
 // (GET <baseURL>/models), for the endpoint form to fill in.
 func FetchModelIDs(ctx context.Context, baseURL, apiKey string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(strings.TrimSpace(baseURL), "/")+"/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, trimBaseURL(baseURL)+"/models", nil)
 	if err != nil {
 		return nil, err
 	}

@@ -570,6 +570,110 @@ func (msgs Messages) ChatToolReadOnly(tool string) string {
 	return Catalog.Format(msgs.locale, "chatToolReadOnly", map[string]any{"tool": tool})
 }
 
+// ChatBranchUnavailable says "This reply can't be branched: the chat isn't saved yet"
+// in the language the app shows.
+func ChatBranchUnavailable() string { return In(i18n.Locale()).ChatBranchUnavailable() }
+
+// ChatBranchUnavailable says "This reply can't be branched: the chat isn't saved yet"
+// in the language of msgs.
+func (msgs Messages) ChatBranchUnavailable() string {
+	return Catalog.Format(msgs.locale, "chatBranchUnavailable", nil)
+}
+
+// ChatBranchFailed says "Can't create the branch: {error}"
+// in the language the app shows.
+func ChatBranchFailed(error string) string { return In(i18n.Locale()).ChatBranchFailed(error) }
+
+// ChatBranchFailed says "Can't create the branch: {error}"
+// in the language of msgs.
+func (msgs Messages) ChatBranchFailed(error string) string {
+	return Catalog.Format(msgs.locale, "chatBranchFailed", map[string]any{"error": error})
+}
+
+// ChatBranched says "Created a branch of the chat"
+// in the language the app shows.
+//
+// A toast once a new chat that goes on from a reply of another is open.
+func ChatBranched() string { return In(i18n.Locale()).ChatBranched() }
+
+// ChatBranched says "Created a branch of the chat"
+// in the language of msgs.
+//
+// A toast once a new chat that goes on from a reply of another is open.
+func (msgs Messages) ChatBranched() string {
+	return Catalog.Format(msgs.locale, "chatBranched", nil)
+}
+
+// ChatOpening says "Opening the chat…"
+// in the language the app shows.
+//
+// Shown while a chat of an earlier run is read from its session file.
+func ChatOpening() string { return In(i18n.Locale()).ChatOpening() }
+
+// ChatOpening says "Opening the chat…"
+// in the language of msgs.
+//
+// Shown while a chat of an earlier run is read from its session file.
+func (msgs Messages) ChatOpening() string {
+	return Catalog.Format(msgs.locale, "chatOpening", nil)
+}
+
+// ChatStillOpening says "The chat is still opening"
+// in the language the app shows.
+func ChatStillOpening() string { return In(i18n.Locale()).ChatStillOpening() }
+
+// ChatStillOpening says "The chat is still opening"
+// in the language of msgs.
+func (msgs Messages) ChatStillOpening() string {
+	return Catalog.Format(msgs.locale, "chatStillOpening", nil)
+}
+
+// ChatOpenFailed says "Can't open the chat: {error}"
+// in the language the app shows.
+func ChatOpenFailed(error string) string { return In(i18n.Locale()).ChatOpenFailed(error) }
+
+// ChatOpenFailed says "Can't open the chat: {error}"
+// in the language of msgs.
+func (msgs Messages) ChatOpenFailed(error string) string {
+	return Catalog.Format(msgs.locale, "chatOpenFailed", map[string]any{"error": error})
+}
+
+// ChatsLoadFailed says "Can't read the chat list: {error}"
+// in the language the app shows.
+func ChatsLoadFailed(error string) string { return In(i18n.Locale()).ChatsLoadFailed(error) }
+
+// ChatsLoadFailed says "Can't read the chat list: {error}"
+// in the language of msgs.
+func (msgs Messages) ChatsLoadFailed(error string) string {
+	return Catalog.Format(msgs.locale, "chatsLoadFailed", map[string]any{"error": error})
+}
+
+// ChatSaveFailed says "The chat isn't kept in the sidebar: {error}"
+// in the language the app shows.
+//
+// A toast when the chat started can't be saved to the list the sidebar
+// shows after a restart.
+func ChatSaveFailed(error string) string { return In(i18n.Locale()).ChatSaveFailed(error) }
+
+// ChatSaveFailed says "The chat isn't kept in the sidebar: {error}"
+// in the language of msgs.
+//
+// A toast when the chat started can't be saved to the list the sidebar
+// shows after a restart.
+func (msgs Messages) ChatSaveFailed(error string) string {
+	return Catalog.Format(msgs.locale, "chatSaveFailed", map[string]any{"error": error})
+}
+
+// ChatForgetFailed says "The closed chat may show again after a restart: {error}"
+// in the language the app shows.
+func ChatForgetFailed(error string) string { return In(i18n.Locale()).ChatForgetFailed(error) }
+
+// ChatForgetFailed says "The closed chat may show again after a restart: {error}"
+// in the language of msgs.
+func (msgs Messages) ChatForgetFailed(error string) string {
+	return Catalog.Format(msgs.locale, "chatForgetFailed", map[string]any{"error": error})
+}
+
 // ComposerPlaceholder says "Message Pi. Enter sends, Shift+Enter adds a line"
 // in the language the app shows.
 func ComposerPlaceholder() string { return In(i18n.Locale()).ComposerPlaceholder() }
@@ -1012,6 +1116,62 @@ func (msgs Messages) MessageOpenSettings() string {
 	return Catalog.Format(msgs.locale, "messageOpenSettings", nil)
 }
 
+// MessageCopy says "Copy"
+// in the language the app shows.
+//
+// The button under a reply that copies its text.
+func MessageCopy() string { return In(i18n.Locale()).MessageCopy() }
+
+// MessageCopy says "Copy"
+// in the language of msgs.
+//
+// The button under a reply that copies its text.
+func (msgs Messages) MessageCopy() string {
+	return Catalog.Format(msgs.locale, "messageCopy", nil)
+}
+
+// MessageBranch says "Branch from here"
+// in the language the app shows.
+//
+// The button under a reply that opens a new chat holding the conversation
+// up to it.
+func MessageBranch() string { return In(i18n.Locale()).MessageBranch() }
+
+// MessageBranch says "Branch from here"
+// in the language of msgs.
+//
+// The button under a reply that opens a new chat holding the conversation
+// up to it.
+func (msgs Messages) MessageBranch() string {
+	return Catalog.Format(msgs.locale, "messageBranch", nil)
+}
+
+// MessageSpeed says "{rate, number, ::.0} tok/s"
+// in the language the app shows.
+//
+// Under a reply: the output tokens the model wrote a second.
+func MessageSpeed(rate float64) string { return In(i18n.Locale()).MessageSpeed(rate) }
+
+// MessageSpeed says "{rate, number, ::.0} tok/s"
+// in the language of msgs.
+//
+// Under a reply: the output tokens the model wrote a second.
+func (msgs Messages) MessageSpeed(rate float64) string {
+	return Catalog.Format(msgs.locale, "messageSpeed", map[string]any{"rate": rate})
+}
+
+// MessageSpeedTooltip says "{tokens, plural, one {# output token} other {# output tokens}} in {seconds, number, ::.0} s"
+// in the language the app shows.
+func MessageSpeedTooltip(tokens int, seconds float64) string {
+	return In(i18n.Locale()).MessageSpeedTooltip(tokens, seconds)
+}
+
+// MessageSpeedTooltip says "{tokens, plural, one {# output token} other {# output tokens}} in {seconds, number, ::.0} s"
+// in the language of msgs.
+func (msgs Messages) MessageSpeedTooltip(tokens int, seconds float64) string {
+	return Catalog.Format(msgs.locale, "messageSpeedTooltip", map[string]any{"tokens": tokens, "seconds": seconds})
+}
+
 // ToolRead says "Read"
 // in the language the app shows.
 func ToolRead() string { return In(i18n.Locale()).ToolRead() }
@@ -1100,6 +1260,64 @@ func ToolNoOutput() string { return In(i18n.Locale()).ToolNoOutput() }
 // in the language of msgs.
 func (msgs Messages) ToolNoOutput() string {
 	return Catalog.Format(msgs.locale, "toolNoOutput", nil)
+}
+
+// ToolWaitingOutput says "Waiting for output…"
+// in the language the app shows.
+func ToolWaitingOutput() string { return In(i18n.Locale()).ToolWaitingOutput() }
+
+// ToolWaitingOutput says "Waiting for output…"
+// in the language of msgs.
+func (msgs Messages) ToolWaitingOutput() string {
+	return Catalog.Format(msgs.locale, "toolWaitingOutput", nil)
+}
+
+// ToolSubagent says "Sub-agent"
+// in the language the app shows.
+func ToolSubagent() string { return In(i18n.Locale()).ToolSubagent() }
+
+// ToolSubagent says "Sub-agent"
+// in the language of msgs.
+func (msgs Messages) ToolSubagent() string {
+	return Catalog.Format(msgs.locale, "toolSubagent", nil)
+}
+
+// ToolCallCount says "{count, plural, one {# call} other {# calls}}"
+// in the language the app shows.
+//
+// In the card of a codemode script: how many tools it called.
+func ToolCallCount(count int) string { return In(i18n.Locale()).ToolCallCount(count) }
+
+// ToolCallCount says "{count, plural, one {# call} other {# calls}}"
+// in the language of msgs.
+//
+// In the card of a codemode script: how many tools it called.
+func (msgs Messages) ToolCallCount(count int) string {
+	return Catalog.Format(msgs.locale, "toolCallCount", map[string]any{"count": count})
+}
+
+// SubagentWaiting says "Waiting for another sub-agent to finish…"
+// in the language the app shows.
+func SubagentWaiting() string { return In(i18n.Locale()).SubagentWaiting() }
+
+// SubagentWaiting says "Waiting for another sub-agent to finish…"
+// in the language of msgs.
+func (msgs Messages) SubagentWaiting() string {
+	return Catalog.Format(msgs.locale, "subagentWaiting", nil)
+}
+
+// SubagentStarting says "Starting…"
+// in the language the app shows.
+//
+// The progress of a sub-agent before it calls a tool or writes.
+func SubagentStarting() string { return In(i18n.Locale()).SubagentStarting() }
+
+// SubagentStarting says "Starting…"
+// in the language of msgs.
+//
+// The progress of a sub-agent before it calls a tool or writes.
+func (msgs Messages) SubagentStarting() string {
+	return Catalog.Format(msgs.locale, "subagentStarting", nil)
 }
 
 // LoginConnecting says "Connecting…"
@@ -2130,6 +2348,16 @@ func (msgs Messages) EndpointsFetchFailed(error string) string {
 	return Catalog.Format(msgs.locale, "endpointsFetchFailed", map[string]any{"error": error})
 }
 
+// EndpointsKeyNotSent says "The base URL changed, so the saved key was not sent to it. Enter the key to use it there."
+// in the language the app shows.
+func EndpointsKeyNotSent() string { return In(i18n.Locale()).EndpointsKeyNotSent() }
+
+// EndpointsKeyNotSent says "The base URL changed, so the saved key was not sent to it. Enter the key to use it there."
+// in the language of msgs.
+func (msgs Messages) EndpointsKeyNotSent() string {
+	return Catalog.Format(msgs.locale, "endpointsKeyNotSent", nil)
+}
+
 // EndpointsNoModels says "The service returned no models"
 // in the language the app shows.
 func EndpointsNoModels() string { return In(i18n.Locale()).EndpointsNoModels() }
@@ -2536,4 +2764,14 @@ func ErrProjectNameEmpty() string { return In(i18n.Locale()).ErrProjectNameEmpty
 // in the language of msgs.
 func (msgs Messages) ErrProjectNameEmpty() string {
 	return Catalog.Format(msgs.locale, "errProjectNameEmpty", nil)
+}
+
+// ErrChatPathEmpty says "The chat has no session file"
+// in the language the app shows.
+func ErrChatPathEmpty() string { return In(i18n.Locale()).ErrChatPathEmpty() }
+
+// ErrChatPathEmpty says "The chat has no session file"
+// in the language of msgs.
+func (msgs Messages) ErrChatPathEmpty() string {
+	return Catalog.Format(msgs.locale, "errChatPathEmpty", nil)
 }

@@ -146,3 +146,79 @@ func TestNewerSchema(t *testing.T) {
 		t.Fatalf("opening a newer database: %v", err)
 	}
 }
+
+// The chats of the sidebar are kept by their logs, the newest started
+// first; saving one again updates it in its place.
+func TestChats(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db")
+	s := open(t, path)
+	if list, err := s.Chats(); len(list) != 0 || err != nil {
+		t.Fatalf("a new database has chats: %+v %v", list, err)
+	}
+	if err := s.SaveChat(Chat{CWD: "/w", Title: "x"}); err == nil {
+		t.Fatal("a chat needs its log")
+	}
+	if err := s.SaveChat(Chat{Path: "/logs/a.jsonl", CWD: "/w", Title: "第一个"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveChat(Chat{Path: "/logs/b.jsonl", CWD: "/v", Title: "分支", Branched: true, FullTools: true}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.Chats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Path != "/logs/b.jsonl" || list[1].Path != "/logs/a.jsonl" {
+		t.Fatalf("chats %+v: want b, then a", list)
+	}
+	if b := list[0]; b.CWD != "/v" || b.Title != "分支" || !b.Branched || !b.FullTools || b.CreatedAt.IsZero() {
+		t.Fatalf("b %+v", b)
+	}
+	a := list[1]
+	if err := s.SaveChat(Chat{Path: a.Path, CWD: a.CWD, Title: "改名"}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	s = open(t, path)
+	list, _ = s.Chats()
+	if len(list) != 2 || list[1].Path != a.Path || list[1].Title != "改名" || !list[1].CreatedAt.Equal(a.CreatedAt) {
+		t.Fatalf("chats %+v: a keeps its place", list)
+	}
+	if err := s.RemoveChat(a.Path); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := s.Chats(); len(list) != 1 || list[0].Path != "/logs/b.jsonl" {
+		t.Fatalf("chats %+v", list)
+	}
+}
+
+// A database of the first version, before chats were kept, gains them and
+// keeps what it held.
+func TestMigrateChats(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db")
+	s := open(t, path)
+	if _, err := s.AddProject(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DROP TABLE chats; PRAGMA user_version = 1"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s = open(t, path)
+	if list, _ := s.Projects(); len(list) != 1 {
+		t.Fatalf("projects %+v", list)
+	}
+	if err := s.SaveChat(Chat{Path: "/logs/a.jsonl", CWD: "/w", Title: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := s.Chats(); len(list) != 1 {
+		t.Fatalf("chats %+v", list)
+	}
+}

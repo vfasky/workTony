@@ -30,6 +30,7 @@ func (a *App) ChatView(c *ui.Context) {
 		c.Toast(a.chatToast)
 		a.chatToast = ""
 	}
+	a.openShown()
 	if c.Shortcut(ui.Cmd, ui.KeyComma) {
 		a.host.OpenSettings("")
 	}
@@ -114,16 +115,14 @@ func (a *App) chatPane(c *ui.Context, p palette) {
 	bar := c.TitleBar()
 	ui.Column(c).Grow(1).MinWidth(0).Background(p.pane).Children(func() {
 		ui.Row(c).Height(titleBarHeight).Shrink(0).Padding(0, bar.Right+16, 0, 20).AlignItems(ui.Center).Gap(10).DragWindow().Children(func() {
-			title := locales.ChatNewChat()
-			if tb.chat != nil && tb.chat.Title() != "" {
-				title = tb.chat.Title()
-			}
-			ui.Text(c, title).Bold().FontSize(14).SingleLine().Grow(1).MinWidth(0)
+			ui.Text(c, a.tabTitle(tb)).Bold().FontSize(14).SingleLine().Grow(1).MinWidth(0)
 			if tb.chat != nil && tb.chat.Busy {
 				ui.Spinner(c).Size(14, 14).Label(locales.ChatReplying())
 			}
 		})
-		if tb.chat == nil || len(tb.chat.Items) == 0 {
+		if tb.chat == nil && tb.saved != nil {
+			a.openingState(c, tb)
+		} else if tb.chat == nil || len(tb.chat.Items) == 0 {
 			a.emptyState(c, p, tb)
 		} else {
 			a.messages(c, p, tb)
@@ -137,9 +136,9 @@ func (a *App) emptyState(c *ui.Context, p palette, tb *tab) {
 	ui.Column(c).Grow(1).Center().Gap(14).Padding(24).Children(func() {
 		brand(c, p, 56)
 		ui.Text(c, locales.ChatEmptyTitle()).FontSize(26).Bold().Margin(6, 0, 0, 0)
-		where := locales.ChatEmptyWhereReadOnly(shortPath(a.eng.CWD()))
+		where := locales.ChatEmptyWhereReadOnly(shortPath(tb.dir))
 		if a.prefs.FullTools {
-			where = locales.ChatEmptyWhereFull(shortPath(a.eng.CWD()))
+			where = locales.ChatEmptyWhereFull(shortPath(tb.dir))
 		}
 		ui.Text(c, where).TextColor(t.TextMuted).TextAlign(ui.Center).MaxWidth(520)
 		if !a.loaded {
@@ -168,11 +167,10 @@ func (a *App) emptyState(c *ui.Context, p palette, tb *tab) {
 					ui.Text(c, s[1]).FontSize(12).TextColor(t.TextMuted).MaxLines(2)
 				})
 				if card.Clicked() {
-					a.send(c, s[1])
+					a.sendTo(c, tb, s[1])
 				}
 			}
 		})
-		_ = tb
 	})
 }
 
@@ -209,10 +207,12 @@ func (a *App) composer(c *ui.Context, p palette, tb *tab) {
 			}
 			// OnTextKey can run between frames: it leaves the text to send
 			// for the next build, which clears the draft once it is sent and
-			// keeps it when it cannot be.
-			if text := a.submitted; text != "" {
-				a.submitted = ""
-				if a.send(c, text) && a.draft == text {
+			// keeps it when it cannot be. The text goes to the chat it was
+			// written in, though another shows now, and nowhere once that
+			// chat is closed.
+			if s := a.submitted; s != nil {
+				a.submitted = nil
+				if t := a.tabByID(s.tab); t != nil && a.sendTo(c, t, s.text) && a.draft == s.text {
 					a.draft = ""
 				}
 			}
@@ -220,7 +220,7 @@ func (a *App) composer(c *ui.Context, p palette, tb *tab) {
 			in.OnTextKey(func(k ui.TextKey) bool {
 				if k.Key == ui.KeyEnter && k.Mods == 0 {
 					if strings.TrimSpace(k.Text()) != "" {
-						a.submitted = k.Text()
+						a.submitted = &submission{tab: tb.id, text: k.Text()}
 						c.Services().Invalidate()
 					}
 					return true
@@ -232,11 +232,14 @@ func (a *App) composer(c *ui.Context, p palette, tb *tab) {
 				// it started with: the chips show those, and changing
 				// either starts a new chat. An empty tab shows what a new
 				// chat gets.
-				dir, full := a.eng.CWD(), a.prefs.FullTools
+				dir, full := tb.dir, a.prefs.FullTools
 				dirTip := locales.ComposerCwdTooltip(dir)
 				toolsTip := locales.ComposerToolsTooltip()
-				if tb.chat != nil {
-					dir, full = tb.chat.CWD(), tb.chat.FullTools()
+				if !tb.empty() {
+					dir, full = a.tabDir(tb), tb.saved != nil && tb.saved.FullTools
+					if tb.chat != nil {
+						full = tb.chat.FullTools()
+					}
 					dirTip = locales.ComposerChatCwdTooltip(dir)
 					toolsTip = locales.ComposerChatToolsTooltip()
 				}
@@ -256,7 +259,7 @@ func (a *App) composer(c *ui.Context, p palette, tb *tab) {
 					if a.prefs.FullTools {
 						started, next = locales.ComposerNewChatFull(), locales.ComposerNewChatsFull()
 					}
-					if tb.chat != nil {
+					if !tb.empty() {
 						a.newTab()
 						c.Toast(started)
 					} else {
@@ -304,7 +307,7 @@ func (a *App) sendButton(c *ui.Context, p palette, tb *tab, busy bool) {
 				a.draft = rest
 				c.Toast(locales.ComposerStoppedDraftRestored())
 			}
-		} else if ready && a.send(c, a.draft) {
+		} else if ready && a.sendTo(c, tb, a.draft) {
 			a.draft = ""
 		}
 	}
@@ -323,11 +326,19 @@ func (a *App) chooseFolder(newChat bool) {
 		if dir == "" {
 			return
 		}
-		err := a.eng.SetCWD(dir)
-		a.host.Post(func() { a.cwdChanged(dir, err, newChat) })
+		a.host.Post(func() {
+			a.switchCWD(dir, func(err error, latest bool) {
+				if err == nil && !latest {
+					a.cwdMoved(dir)
+					return
+				}
+				a.cwdChanged(dir, err, newChat)
+			})
+		})
 	}()
 }
 
+// cwdChanged shows the move of new chats to dir, the latest asked for.
 func (a *App) cwdChanged(dir string, err error, newChat bool) {
 	if err != nil {
 		msg := locales.ChatCannotUseFolder(err.Error())
@@ -338,11 +349,9 @@ func (a *App) cwdChanged(dir string, err error, newChat bool) {
 		}
 		return
 	}
-	a.prefs.CWD = dir
-	a.savePrefs()
-	a.openProject(dir)
-	if newChat && a.current().chat != nil {
-		a.newTab()
+	a.cwdMoved(dir)
+	if newChat && !a.current().empty() {
+		a.newTabIn(dir)
 		a.chatToast = locales.ChatStartedIn(filepath.Base(dir))
 	}
 }
