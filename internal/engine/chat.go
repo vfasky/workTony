@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -12,6 +11,10 @@ import (
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
+	"github.com/MichaelKinsy/PiG/coding/extension"
+	"github.com/MichaelKinsy/PiG/coding/extension/builtin/codemode"
+
+	"worktony/locales"
 )
 
 // Tool sets a chat can start with. The GUI asks no approval before a tool
@@ -110,14 +113,16 @@ type Chat struct {
 	// Version grows whenever the transcript changes.
 	Version uint64
 
-	sess   *coding.Session
-	svcs   *coding.AgentSessionServices
-	post   func(func())
-	ctx    context.Context
-	cancel context.CancelFunc
-	unsub  func()
-	nextID int
-	model  Model
+	sess    *coding.Session
+	svcs    *coding.AgentSessionServices
+	loader  *coding.DefaultResourceLoader
+	plugins *pluginLink
+	post    func(func())
+	ctx     context.Context
+	cancel  context.CancelFunc
+	unsub   func()
+	nextID  int
+	model   Model
 	// cwd and toolNames are what the session was started with: its
 	// tools work in cwd for its whole life.
 	cwd       string
@@ -134,10 +139,10 @@ type Chat struct {
 // NewChat starts a chat.
 func (e *Engine) NewChat(opts ChatOptions) (*Chat, error) {
 	e.mu.Lock()
-	svcs, rt := e.svcs, e.rt
+	svcs := e.svcs
 	e.mu.Unlock()
 	if opts.Model == "" {
-		return nil, errors.New("还没有可用的模型，请先在设置中登录或添加 API Key")
+		return nil, errors.New(locales.ChatNoModel())
 	}
 	model, err := coding.BuildModel(opts.Model, svcs)
 	if err != nil {
@@ -147,18 +152,35 @@ func (e *Engine) NewChat(opts ChatOptions) (*Chat, error) {
 	if tools == nil {
 		tools = ReadOnlyTools
 	}
-	sess, err := rt.New(coding.SessionStartOptions{
-		Model:                  model,
-		ThinkingLevel:          opts.Thinking,
-		InitialActiveToolNames: tools,
-	})
+	plugins, subagents := newPluginLink(&e.plugins), newSubagents(svcs, tools)
+	loader, err := newResourceLoader(svcs, e.chatExtensions(svcs, plugins, subagents, readOnly(tools)), false)
 	if err != nil {
+		plugins.stop()
 		return nil, err
 	}
+	// codemode is always on: the model reaches MCP tools and sub-agents
+	// through it.
+	sessOpts := coding.SessionOptions{
+		Model:                  model,
+		ThinkingLevel:          opts.Thinking,
+		InitialActiveToolNames: append(slices.Clone(tools), codemode.ToolName),
+		ResourceLoader:         loader,
+	}
+	guard := guardReadOnly(&sessOpts, tools)
+	sess, err := newSession(svcs, sessOpts)
+	if err != nil {
+		plugins.stop()
+		loader.Close()
+		return nil, err
+	}
+	if guard != nil {
+		guard.sess.Store(sess)
+	}
+	subagents.parent.Store(sess)
 	// The chat listens with Subscribe and reads nothing from Events: without
 	// this, a reply of more events than its buffer holds stops streaming.
 	sess.DiscardEvents()
-	c := &Chat{sess: sess, svcs: svcs, post: opts.Post, tools: map[string]*Tool{}, model: modelOf(model, e.providerNames()),
+	c := &Chat{sess: sess, svcs: svcs, loader: loader, plugins: plugins, post: opts.Post, tools: map[string]*Tool{}, model: modelOf(model, e.providerNames()),
 		cwd: svcs.CWD(), toolNames: slices.Clone(tools)}
 	if c.post == nil {
 		var mu sync.Mutex
@@ -170,6 +192,13 @@ func (e *Engine) NewChat(opts ChatOptions) (*Chat, error) {
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.unsub = sess.Subscribe(c.onEvent)
+	// Binding runs the extensions' session_start, where the MCP extension
+	// starts connecting its servers, and adds the tools the extensions
+	// registered to the session's. A chat whose extensions fail still runs,
+	// with the built-in tools, and says why.
+	if err := sess.BindExtensions(c.ctx, coding.ExtensionBindings{Mode: extension.ModeRPC}); err != nil {
+		c.post(func() { c.notice(locales.ChatExtensionsFailed(err.Error())) })
+	}
 	return c, nil
 }
 
@@ -207,9 +236,7 @@ func (c *Chat) CWD() string { return c.cwd }
 
 // FullTools reports whether the chat was started with tools that change
 // files or run commands.
-func (c *Chat) FullTools() bool {
-	return slices.ContainsFunc(c.toolNames, func(name string) bool { return !slices.Contains(ReadOnlyTools, name) })
-}
+func (c *Chat) FullTools() bool { return !readOnly(c.toolNames) }
 
 // Send sends text, or, while a reply comes in, queues it to send once the
 // turns before it end. Call it on the transcript's goroutine.
@@ -298,7 +325,41 @@ func (c *Chat) Abort() string {
 func (c *Chat) Close() {
 	c.cancel()
 	c.unsub()
+	c.plugins.stop()
 	_ = c.sess.Close()
+	c.loader.Close()
+}
+
+// newSession starts a session of svcs whose extensions are those of its
+// loader, run by a runner of its own. PiG's Runtime gives the sessions it
+// starts one runner, for one session at a time as in the CLI.
+func newSession(svcs *coding.AgentSessionServices, opts coding.SessionOptions) (*coding.Session, error) {
+	opts.Transport = ai.Transport(svcs.Settings().Transport)
+	return coding.NewSession(svcs, opts)
+}
+
+// newResourceLoader loads what a session reads besides its messages:
+// skills, prompt templates, context files such as AGENTS.md, and
+// extensions, the inline ones given and, unless noExtensions, those of the
+// settings, as the loader PiG makes for a session does, but not the TUI's
+// themes. The caller owns it: PiG never closes the loader it makes for a
+// session, so the Extension Host of its extensions would outlive the
+// session, and the Services' loader, which PiG closes, is one for all
+// sessions, whose extensions act on the session started last.
+func newResourceLoader(svcs *coding.AgentSessionServices, inline []extension.InlineExtension, noExtensions bool) (*coding.DefaultResourceLoader, error) {
+	loader := coding.NewDefaultResourceLoader(coding.DefaultResourceLoaderOptions{
+		CWD:                svcs.CWD(),
+		AgentDir:           svcs.AgentDir(),
+		SettingsManager:    svcs.SettingsManager(),
+		NoThemes:           true,
+		NoExtensions:       noExtensions,
+		ExtensionFactories: inline,
+	})
+	if err := loader.Reload(); err != nil {
+		loader.Close()
+		return nil, err
+	}
+	return loader, nil
 }
 
 // Title is the start of the first user message.
@@ -380,10 +441,10 @@ func (c *Chat) onEvent(ev agent.AgentEvent) {
 			c.Version++
 		})
 	case agent.AutoRetryStartEvent:
-		msg := fmt.Sprintf("请求失败，%.1f 秒后重试（%d/%d）：%s", float64(e.DelayMs)/1000, e.Attempt, e.MaxAttempts, e.ErrorMessage)
+		msg := locales.ChatRetrying(float64(e.DelayMs)/1000, e.Attempt, e.MaxAttempts, e.ErrorMessage)
 		c.post(func() { c.notice(msg) })
 	case agent.CompactionStartEvent:
-		c.post(func() { c.notice("上下文较长，正在压缩历史…") })
+		c.post(func() { c.notice(locales.ChatCompacting()) })
 	}
 }
 
@@ -462,7 +523,7 @@ func (c *Chat) assistantEnded(parts []Part, stop ai.StopReason, msg string, toke
 	case ai.StopReasonError:
 		it.Error = msg
 		if it.Error == "" {
-			it.Error = "请求失败"
+			it.Error = locales.ChatRequestFailed()
 		}
 	case ai.StopReasonAborted:
 		it.Aborted = true

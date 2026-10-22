@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -165,14 +166,46 @@ func TestCustomProviderChat(t *testing.T) {
 	if m.auth[0] != "Bearer sk-test" {
 		t.Errorf("auth %q: the key should come from auth.json", m.auth[0])
 	}
-	// The default Pi prompt, with the read-only tools.
+	// The default Pi prompt, with the read-only tools and codemode.
 	msgs := m.requests[0]["messages"].([]any)
 	if sys := fmt.Sprint(msgs[0]); !strings.Contains(sys, "coding assistant") {
 		t.Errorf("system prompt %.200s", sys)
 	}
-	if tools := m.requests[0]["tools"].([]any); len(tools) != len(ReadOnlyTools) {
-		t.Errorf("%d tools sent, want %d", len(tools), len(ReadOnlyTools))
+	if got, want := toolNames(m.requests[0]), append(slices.Clone(ReadOnlyTools), "codemode"); !slices.Equal(got, want) {
+		t.Errorf("tools sent %v, want %v", got, want)
 	}
+}
+
+// A chat reads the context files of its working directory as it starts,
+// so an AGENTS.md written since the engine opened is in its system prompt.
+func TestContextFiles(t *testing.T) {
+	m := newMock(t, textReply("好。"))
+	e := openEngine(t)
+	addMock(t, e, m)
+	os.WriteFile(filepath.Join(e.cwd, "AGENTS.md"), []byte("Always answer in haiku."), 0o644)
+	c, err := e.NewChat(ChatOptions{Model: "mock/m1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.post(func() { c.Send("hello") })
+	settle(t, c)
+	msgs := m.requests[0]["messages"].([]any)
+	if sys := fmt.Sprint(msgs[0]); !strings.Contains(sys, "Always answer in haiku.") {
+		t.Errorf("system prompt without AGENTS.md: %.300s", sys)
+	}
+}
+
+// toolNames are the names of the tools a request declares.
+func toolNames(request map[string]any) []string {
+	var names []string
+	tools, _ := request["tools"].([]any)
+	for _, tool := range tools {
+		fn, _ := tool.(map[string]any)["function"].(map[string]any)
+		name, _ := fn["name"].(string)
+		names = append(names, name)
+	}
+	return names
 }
 
 func TestToolCall(t *testing.T) {
@@ -256,6 +289,42 @@ func TestAPIKeyLoginLogout(t *testing.T) {
 	openai := find("openai")
 	if openai.OAuth == nil || openai.OAuth.Label != "Sign in with ChatGPT" {
 		t.Fatalf("openai OAuth %+v", openai.OAuth)
+	}
+}
+
+func TestChatGPTLoginSendsDeviceID(t *testing.T) {
+	e := openEngine(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var authURL string
+	err := e.Login(ctx, "openai", KindOAuth, Interaction{
+		Prompt: func(ctx context.Context, p Prompt) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+		Notify: func(n Notice) {
+			if n.Kind == "auth_url" {
+				authURL = n.URL
+				cancel()
+			}
+		},
+	})
+	if err != nil && strings.Contains(err.Error(), "is in use") {
+		t.Skip(err)
+	}
+	if authURL == "" {
+		t.Fatalf("no sign-in URL: %v", err)
+	}
+	var settings struct {
+		DeviceID string `json:"deviceId"`
+	}
+	b, _ := os.ReadFile(filepath.Join(e.AgentDir(), "settings.json"))
+	json.Unmarshal(b, &settings)
+	if settings.DeviceID == "" {
+		t.Fatalf("settings.json %s", b)
+	}
+	if want := "ext_agent_host_id=urn%3Auuid%3A" + settings.DeviceID; !strings.Contains(authURL, want) {
+		t.Fatalf("sign-in URL %s lacks %s", authURL, want)
 	}
 }
 

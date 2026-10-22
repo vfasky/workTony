@@ -4,29 +4,16 @@ package app
 
 import (
 	"context"
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 
-	// MyGo's own strings in Chinese: the search fields, menus, Copy.
-	_ "github.com/egoist/mygo/locales/zh-Hans"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 
 	"worktony/internal/engine"
+	"worktony/internal/store"
+	"worktony/locales"
 )
-
-// Prefs are the GUI's own preferences; models and credentials stay in
-// PiG's files.
-type Prefs struct {
-	CWD       string `json:"cwd,omitempty"`
-	FullTools bool   `json:"fullTools,omitempty"`
-}
-
-// Locale is the one language the app is written in.
-const Locale = "zh-Hans"
 
 // Host is what the app needs from the windows it is shown in.
 type Host struct {
@@ -44,14 +31,22 @@ type Host struct {
 	OpenURL func(url string)
 	// Reveal shows a file in Finder or Explorer.
 	Reveal func(path string)
+	// SetLocale shows the app in the language of tag, "" for the system's.
+	SetLocale func(tag string)
+	// Debug is a development build, which the windows mark.
+	Debug bool
 }
 
 // App is the state both windows show. It belongs to the main thread.
 type App struct {
-	eng       *engine.Engine
-	host      Host
-	prefs     Prefs
-	prefsPath string
+	eng   *engine.Engine
+	host  Host
+	db    *store.Store
+	prefs Prefs
+
+	// projects are the sidebar's folders, as the database lists them.
+	projects []store.Project
+	renaming *renameForm
 
 	models    []engine.Model
 	providers []engine.Provider
@@ -82,9 +77,10 @@ type tab struct {
 	open  map[string]bool // thinking and tool parts shown open
 }
 
-// New makes the app's state and loads its data in the background.
-func New(eng *engine.Engine, host Host, prefsPath string) *App {
-	a := &App{eng: eng, host: host, prefsPath: prefsPath}
+// New makes the app's state and loads its data in the background. db
+// keeps its preferences and projects; the caller closes it after Close.
+func New(eng *engine.Engine, host Host, db *store.Store) *App {
+	a := &App{eng: eng, host: host, db: db}
 	if a.host.Post == nil {
 		a.host.Post = func(fn func()) { fn() }
 	}
@@ -97,6 +93,7 @@ func New(eng *engine.Engine, host Host, prefsPath string) *App {
 			a.prefs.CWD = ""
 		}
 	}
+	a.loadProjects()
 	// Links in replies open in the browser, as markdown's default does.
 	a.md = markdown.Options{}
 	a.newTab()
@@ -104,27 +101,8 @@ func New(eng *engine.Engine, host Host, prefsPath string) *App {
 	return a
 }
 
-func (a *App) loadPrefs() {
-	if a.prefsPath == "" {
-		return
-	}
-	if b, err := os.ReadFile(a.prefsPath); err == nil {
-		_ = json.Unmarshal(b, &a.prefs)
-	}
-}
-
-func (a *App) savePrefs() {
-	if a.prefsPath == "" {
-		return
-	}
-	b, err := json.MarshalIndent(a.prefs, "", "  ")
-	if err != nil {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(a.prefsPath), 0o755); err == nil {
-		_ = os.WriteFile(a.prefsPath, b, 0o644)
-	}
-}
+// Notice shows msg in the chat window's next frame.
+func (a *App) Notice(msg string) { a.chatToast = msg }
 
 // Refresh reloads models and providers off the main thread.
 func (a *App) Refresh() {
@@ -190,8 +168,13 @@ func (a *App) current() *tab {
 	return a.tabs[0]
 }
 
-// NewChat shows a new, empty chat.
-func (a *App) NewChat() { a.newTab() }
+// NewChat shows a new, empty chat, under the project new chats go to.
+func (a *App) NewChat() {
+	a.newTab()
+	if pr := a.projectOf(a.eng.CWD()); pr != nil && pr.Collapsed {
+		a.setCollapsed(*pr, false)
+	}
+}
 
 // newTab shows a new, empty chat, reusing the empty one there is. Either
 // way it takes the default model as it is now.
@@ -241,12 +224,12 @@ func (a *App) send(c *ui.Context, text string) bool {
 	t := a.current()
 	if t.chat == nil {
 		if t.model == "" {
-			c.Toast("还没有可用的模型，请先在设置中登录或添加 API Key")
+			c.Toast(locales.ChatNoModel())
 			return false
 		}
 		chat, err := a.eng.NewChat(engine.ChatOptions{Model: t.model, Tools: a.tools(), Post: a.host.PostChat})
 		if err != nil {
-			c.Toast("无法开始对话: " + err.Error())
+			c.Toast(locales.ChatStartFailed(err.Error()))
 			return false
 		}
 		t.chat = chat
@@ -261,7 +244,7 @@ func (a *App) setModel(c *ui.Context, m engine.Model) {
 	t := a.current()
 	if t.chat != nil {
 		if err := t.chat.SetModel(m); err != nil {
-			c.Toast("切换模型失败: " + err.Error())
+			c.Toast(locales.ChatSwitchModelFailed(err.Error()))
 			return
 		}
 	}

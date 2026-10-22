@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+
+	"worktony/locales"
 )
 
 const (
@@ -22,7 +24,7 @@ func (a *App) ChatView(c *ui.Context) {
 		c.Root().Background(ui.Transparent)
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyN) {
-		a.newTab()
+		a.NewChat()
 	}
 	if a.chatToast != "" {
 		c.Toast(a.chatToast)
@@ -36,6 +38,7 @@ func (a *App) ChatView(c *ui.Context) {
 		ui.Box(c).Width(1).Background(p.hairline)
 		a.chatPane(c, p)
 	})
+	a.renameDialog(c, p)
 }
 
 func (a *App) sidebar(c *ui.Context, p palette, vibrant bool) {
@@ -46,64 +49,46 @@ func (a *App) sidebar(c *ui.Context, p palette, vibrant bool) {
 	}
 	side.Children(func() {
 		bar := c.TitleBar()
-		ui.Row(c).Height(titleBarHeight).Shrink(0).Padding(0, 10, 0, bar.Left+12).AlignItems(ui.Center).DragWindow().Children(func() {
+		ui.Row(c).Height(titleBarHeight).Shrink(0).Padding(0, 14, 0, bar.Left+12).AlignItems(ui.Center).DragWindow().Children(func() {
 			if bar.Left == 0 {
 				brand(c, p, 22)
 				ui.Text(c, "Pi").Bold().FontSize(15).Margin(0, 0, 0, 8)
 			}
+			ui.Spacer(c)
+			a.debugBadge(c)
 		})
 		ui.Column(c).Padding(2, 10, 6, 10).Children(func() {
-			row := ui.ButtonBase(c.Key("new")).Padding(8, 10).Radius(8).Gap(10).AlignItems(ui.Center).Label("新对话")
+			row := ui.ButtonBase(c.Key("new")).Padding(8, 10).Radius(8).Gap(10).AlignItems(ui.Center).Label(locales.ChatNewChat())
 			if row.Hovered() {
 				row.Background(p.subtle)
 			}
 			row.Children(func() {
 				ui.Icon(c, icPencil).FontSize(15).TextColor(t.Text)
-				ui.Text(c, "新对话").Grow(1)
+				ui.Text(c, locales.ChatNewChat()).Grow(1)
 				ui.Text(c, "⌘N").FontSize(11).TextColor(t.TextMuted)
 			})
 			if row.Clicked() {
-				a.newTab()
+				a.NewChat()
 			}
 		})
-		var closing *tab
-		list := ui.Sidebar(c, &a.selected, func() {
-			ui.SidebarSection(c, "最近", nil, func() {
-				for _, tb := range a.tabs {
-					title := "新对话"
-					if tb.chat != nil {
-						if s := tb.chat.Title(); s != "" {
-							title = s
-						}
-					}
-					item := ui.SidebarItem(c.Key(tb.id), tb.id, icMessage, title)
-					if tb.chat != nil && tb.chat.Busy {
-						item.Tooltip("正在回复…")
-					}
-					item.ContextMenu(func(m *ui.Menu) {
-						if m.Item("关闭对话").Chosen() {
-							closing = tb
-						}
-					})
-				}
-			})
-		}).Grow(1).Label("对话")
+		var later []func()
+		list := ui.Sidebar(c, &a.selected, func() { a.sidebarList(c, p, &later) }).Grow(1).Label(locales.ChatList())
 		// The sidebar's color, or the material, shows under the list.
 		list.Background(ui.Transparent)
-		if closing != nil {
-			a.closeTab(closing)
+		for _, fn := range later {
+			fn()
 		}
 		ui.Box(c).Height(1).Background(p.hairline).Margin(0, 12)
 		ui.Column(c).Padding(8, 10, 12, 10).Children(func() {
-			row := ui.ButtonBase(c.Key("settings")).Padding(8, 10).Radius(8).Gap(10).AlignItems(ui.Center).Label("设置")
+			row := ui.ButtonBase(c.Key("settings")).Padding(8, 10).Radius(8).Gap(10).AlignItems(ui.Center).Label(locales.ChatSettings())
 			if row.Hovered() {
 				row.Background(p.subtle)
 			}
 			row.Children(func() {
 				ui.Icon(c, icSettings).FontSize(15)
-				ui.Text(c, "设置").Grow(1)
+				ui.Text(c, locales.ChatSettings()).Grow(1)
 				if n := a.signedIn(); n > 0 {
-					ui.Text(c, "已连接 "+itoa(n)).FontSize(11).TextColor(t.TextMuted)
+					ui.Text(c, locales.ChatConnectedCount(n)).FontSize(11).TextColor(t.TextMuted)
 				}
 			})
 			if row.Clicked() {
@@ -129,13 +114,13 @@ func (a *App) chatPane(c *ui.Context, p palette) {
 	bar := c.TitleBar()
 	ui.Column(c).Grow(1).MinWidth(0).Background(p.pane).Children(func() {
 		ui.Row(c).Height(titleBarHeight).Shrink(0).Padding(0, bar.Right+16, 0, 20).AlignItems(ui.Center).Gap(10).DragWindow().Children(func() {
-			title := "新对话"
+			title := locales.ChatNewChat()
 			if tb.chat != nil && tb.chat.Title() != "" {
 				title = tb.chat.Title()
 			}
 			ui.Text(c, title).Bold().FontSize(14).SingleLine().Grow(1).MinWidth(0)
 			if tb.chat != nil && tb.chat.Busy {
-				ui.Spinner(c).Size(14, 14).Label("正在回复")
+				ui.Spinner(c).Size(14, 14).Label(locales.ChatReplying())
 			}
 		})
 		if tb.chat == nil || len(tb.chat.Items) == 0 {
@@ -151,12 +136,10 @@ func (a *App) emptyState(c *ui.Context, p palette, tb *tab) {
 	t := c.Theme()
 	ui.Column(c).Grow(1).Center().Gap(14).Padding(24).Children(func() {
 		brand(c, p, 56)
-		ui.Text(c, "有什么可以帮你？").FontSize(26).Bold().Margin(6, 0, 0, 0)
-		where := "Pi 会在 " + shortPath(a.eng.CWD()) + " 中工作"
+		ui.Text(c, locales.ChatEmptyTitle()).FontSize(26).Bold().Margin(6, 0, 0, 0)
+		where := locales.ChatEmptyWhereReadOnly(shortPath(a.eng.CWD()))
 		if a.prefs.FullTools {
-			where += "，可以读写文件并执行命令。"
-		} else {
-			where += "，只读取文件，不会修改。"
+			where = locales.ChatEmptyWhereFull(shortPath(a.eng.CWD()))
 		}
 		ui.Text(c, where).TextColor(t.TextMuted).TextAlign(ui.Center).MaxWidth(520)
 		if !a.loaded {
@@ -168,10 +151,10 @@ func (a *App) emptyState(c *ui.Context, p palette, tb *tab) {
 			return
 		}
 		suggestions := [][2]string{
-			{"梳理项目结构", "看看这个目录里的项目是怎么组织的，给我一个简要说明。"},
-			{"找出待办事项", "找出代码里所有的 TODO 和 FIXME，按文件列出来。"},
-			{"总结 README", "读一下 README，用三句话总结这个项目。"},
-			{"解释一段代码", "挑一个最核心的源文件，解释它的主要逻辑。"},
+			{locales.ChatSuggestStructureTitle(), locales.ChatSuggestStructurePrompt()},
+			{locales.ChatSuggestTodosTitle(), locales.ChatSuggestTodosPrompt()},
+			{locales.ChatSuggestReadmeTitle(), locales.ChatSuggestReadmePrompt()},
+			{locales.ChatSuggestExplainTitle(), locales.ChatSuggestExplainPrompt()},
 		}
 		ui.Grid(c).Columns(2).Gap(10).Width(560).Margin(18, 0, 0, 0).Children(func() {
 			for i, s := range suggestions {
@@ -199,15 +182,15 @@ func (a *App) connectCard(c *ui.Context, p palette) {
 	ui.Column(c).Width(460).Margin(18, 0, 0, 0).Padding(20).Gap(12).Radius(14).Background(p.card).Border(1, p.hairline).Children(func() {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, icPlug).FontSize(18).TextColor(t.Accent)
-			ui.Text(c, "先连接一个模型").Bold()
+			ui.Text(c, locales.ChatConnectTitle()).Bold()
 		})
-		ui.Text(c, "用 ChatGPT、Claude 或 GitHub Copilot 等订阅账号登录，或者填入任意服务商的 API Key。").FontSize(13).TextColor(t.TextMuted)
+		ui.Text(c, locales.ChatConnectBody()).FontSize(13).TextColor(t.TextMuted)
 		ui.Row(c).Gap(8).Margin(4, 0, 0, 0).Children(func() {
-			if ui.PrimaryButton(c, "使用 ChatGPT 登录").Clicked() {
+			if ui.PrimaryButton(c, locales.ChatSignInWithChatGPT()).Clicked() {
 				a.host.OpenSettings(pageAccounts)
 				a.startLogin("openai", loginOAuth)
 			}
-			if ui.Button(c, "添加 API Key").Clicked() {
+			if ui.Button(c, locales.ChatAddAPIKey()).Clicked() {
 				a.host.OpenSettings(pageAPIKeys)
 			}
 		})
@@ -220,9 +203,9 @@ func (a *App) composer(c *ui.Context, p palette, tb *tab) {
 		box := ui.Column(c).Grow(1).MaxWidth(contentWidth).Radius(18).Background(p.card).Border(1, p.hairline).
 			Shadow(0, 8, 28, 0, ui.RGBA(0, 0, 0, 0.06)).Padding(12, 12, 10, 16).Gap(8)
 		box.Children(func() {
-			placeholder := "给 Pi 发消息，Enter 发送，Shift+Enter 换行"
+			placeholder := locales.ComposerPlaceholder()
 			if busy {
-				placeholder = "补充说明会在本轮回复后发送…"
+				placeholder = locales.ComposerPlaceholderBusy()
 			}
 			// OnTextKey can run between frames: it leaves the text to send
 			// for the next build, which clears the draft once it is sent and
@@ -233,7 +216,7 @@ func (a *App) composer(c *ui.Context, p palette, tb *tab) {
 					a.draft = ""
 				}
 			}
-			in := ui.TextAreaBase(c.Key("draft-"+tb.id), &a.draft).Lines(1, 10).Placeholder(placeholder).AutoFocus().Label("消息").Margin(4, 0, 0, 0)
+			in := ui.TextAreaBase(c.Key("draft-"+tb.id), &a.draft).Lines(1, 10).Placeholder(placeholder).AutoFocus().Label(locales.ComposerLabel()).Margin(4, 0, 0, 0)
 			in.OnTextKey(func(k ui.TextKey) bool {
 				if k.Key == ui.KeyEnter && k.Mods == 0 {
 					if strings.TrimSpace(k.Text()) != "" {
@@ -250,34 +233,34 @@ func (a *App) composer(c *ui.Context, p palette, tb *tab) {
 				// either starts a new chat. An empty tab shows what a new
 				// chat gets.
 				dir, full := a.eng.CWD(), a.prefs.FullTools
-				dirTip := "工作目录: " + dir
-				toolsTip := "工具权限：点击切换"
+				dirTip := locales.ComposerCwdTooltip(dir)
+				toolsTip := locales.ComposerToolsTooltip()
 				if tb.chat != nil {
 					dir, full = tb.chat.CWD(), tb.chat.FullTools()
-					dirTip = "本对话的工作目录: " + dir + "；选择其他目录会开始新对话"
-					toolsTip = "本对话的工具权限；切换会开始新对话"
+					dirTip = locales.ComposerChatCwdTooltip(dir)
+					toolsTip = locales.ComposerChatToolsTooltip()
 				}
-				folder := chip(c, "cwd", icFolder, filepath.Base(dir), p).Tooltip(dirTip)
+				folder := chip(c, "cwd", icFolder, filepath.Base(dir), p).Tooltip(dirTip).Label(locales.ComposerCwdLabel(filepath.Base(dir)))
 				if folder.Clicked() {
 					a.chooseFolder(true)
 				}
-				mode, label := icShield, "只读"
+				mode, label := icShield, locales.ComposerReadOnly()
 				if full {
-					mode, label = icZap, "可修改"
+					mode, label = icZap, locales.ComposerFullAccess()
 				}
 				tools := chip(c, "tools", mode, label, p).Tooltip(toolsTip)
 				if tools.Clicked() {
 					a.prefs.FullTools = !full
 					a.savePrefs()
-					msg := "只读取文件"
+					started, next := locales.ComposerNewChatReadOnly(), locales.ComposerNewChatsReadOnly()
 					if a.prefs.FullTools {
-						msg = "可读写文件并执行命令"
+						started, next = locales.ComposerNewChatFull(), locales.ComposerNewChatsFull()
 					}
 					if tb.chat != nil {
 						a.newTab()
-						c.Toast("已开始新对话：" + msg)
+						c.Toast(started)
 					} else {
-						c.Toast("新对话" + msg)
+						c.Toast(next)
 					}
 				}
 				if tb.chat != nil {
@@ -298,14 +281,14 @@ func (a *App) sendButton(c *ui.Context, p palette, tb *tab, busy bool) {
 	b := ui.ButtonBase(c.Key("send")).Size(32, 32).Radius(16).Center()
 	switch {
 	case stop:
-		b.Background(t.Text).TextColor(p.card).Label("停止").Tooltip("停止生成")
+		b.Background(t.Text).TextColor(p.card).Label(locales.ComposerStop()).Tooltip(locales.ComposerStopTooltip())
 	case ready:
-		b.Background(t.Accent).TextColor(t.AccentText).Label("发送")
+		b.Background(t.Accent).TextColor(t.AccentText).Label(locales.ComposerSend())
 		if b.Hovered() {
 			b.Background(t.AccentHover)
 		}
 	default:
-		b.Background(p.subtle).TextColor(t.TextMuted).Label("发送").Disabled(true)
+		b.Background(p.subtle).TextColor(t.TextMuted).Label(locales.ComposerSend()).Disabled(true)
 	}
 	b.Children(func() {
 		if stop {
@@ -319,7 +302,7 @@ func (a *App) sendButton(c *ui.Context, p palette, tb *tab, busy bool) {
 			// Messages queued behind the reply go back to the composer.
 			if rest := tb.chat.Abort(); rest != "" {
 				a.draft = rest
-				c.Toast("已停止，未发送的消息已放回输入框")
+				c.Toast(locales.ComposerStoppedDraftRestored())
 			}
 		} else if ready && a.send(c, a.draft) {
 			a.draft = ""
@@ -327,9 +310,10 @@ func (a *App) sendButton(c *ui.Context, p palette, tb *tab, busy bool) {
 	}
 }
 
-// chooseFolder asks for the directory of new chats. From the composer of a
-// chat already started, newChat opens a new chat there: the chat shown
-// keeps working where it started.
+// chooseFolder asks for the directory of new chats, which becomes a project
+// of the sidebar. From the composer of a chat already started, or adding a
+// project, newChat opens a new chat there: the chat shown keeps working
+// where it started.
 func (a *App) chooseFolder(newChat bool) {
 	if a.host.ChooseFolder == nil {
 		return
@@ -346,7 +330,7 @@ func (a *App) chooseFolder(newChat bool) {
 
 func (a *App) cwdChanged(dir string, err error, newChat bool) {
 	if err != nil {
-		msg := "无法使用该目录: " + err.Error()
+		msg := locales.ChatCannotUseFolder(err.Error())
 		if newChat {
 			a.chatToast = msg
 		} else {
@@ -356,10 +340,21 @@ func (a *App) cwdChanged(dir string, err error, newChat bool) {
 	}
 	a.prefs.CWD = dir
 	a.savePrefs()
+	a.openProject(dir)
 	if newChat && a.current().chat != nil {
 		a.newTab()
-		a.chatToast = "已在 " + filepath.Base(dir) + " 中开始新对话"
+		a.chatToast = locales.ChatStartedIn(filepath.Base(dir))
 	}
+}
+
+// debugBadge marks the windows of a development build.
+func (a *App) debugBadge(c *ui.Context) {
+	if !a.host.Debug {
+		return
+	}
+	orange := ui.Hex("#F97316")
+	ui.Text(c, "DEBUG").FontSize(10).Bold().LetterSpacing(0.8).TextColor(orange).
+		Padding(2, 7).Radius(6).Background(orange.Alpha(0.14)).Tooltip(locales.ChatDebugTooltip())
 }
 
 // brand is the app's mark: π on a gradient.

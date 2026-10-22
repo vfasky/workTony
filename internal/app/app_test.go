@@ -16,6 +16,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"worktony/internal/engine"
+	"worktony/internal/store"
 )
 
 // queue stands in for the main thread: functions posted from other
@@ -61,6 +62,7 @@ func mockLLM(t *testing.T, reply ...string) *httptest.Server {
 type fixture struct {
 	app   *App
 	eng   *engine.Engine
+	db    *store.Store
 	q     *queue
 	pages []string
 }
@@ -84,11 +86,16 @@ func newFixture(t *testing.T, llm *httptest.Server) *fixture {
 			t.Fatal(err)
 		}
 	}
-	f := &fixture{eng: eng, q: &queue{}}
+	db, err := store.Open(filepath.Join(t.TempDir(), "worktony.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	f := &fixture{eng: eng, db: db, q: &queue{}}
 	f.app = New(eng, Host{
 		Post:         f.q.post,
 		OpenSettings: func(page string) { f.pages = append(f.pages, page) },
-	}, "")
+	}, db)
 	f.app.RefreshSync()
 	t.Cleanup(f.app.Close)
 	return f
@@ -129,7 +136,7 @@ func shot(t *testing.T, tt *ui.Tester, name string) {
 func TestChatSendsAndStreams(t *testing.T) {
 	f := newFixture(t, mockLLM(t, "## 你好\n\n", "我是 **Pi**，", "可以帮你阅读和理解代码。\n\n", "```go\nfmt.Println(\"hi\")\n```\n"))
 	tt := ui.NewTester(f.app.ChatView, 1100, 740)
-	tt.SetLocale(Locale)
+	tt.SetLocale(testLocale)
 	tt.SetTitleBar(ui.TitleBar{Height: 52, Left: 78})
 	tt.Frame()
 	if !tt.HasText("有什么可以帮你？") || !tt.HasText("m1") {
@@ -192,7 +199,7 @@ func TestToolCard(t *testing.T) {
 	os.WriteFile(filepath.Join(f.eng.CWD(), "README.md"), []byte("# hi"), 0o644)
 	os.WriteFile(filepath.Join(f.eng.CWD(), "main.go"), []byte("package main"), 0o644)
 	tt := ui.NewTester(f.app.ChatView, 1100, 740)
-	tt.SetLocale(Locale)
+	tt.SetLocale(testLocale)
 	tt.SetTitleBar(ui.TitleBar{Height: 52, Left: 78})
 	tt.Frame()
 	f.app.send(nil, "列一下文件")
@@ -217,7 +224,7 @@ func TestChatWithoutModels(t *testing.T) {
 	f.app.models = nil // as on a machine without any credential
 	f.app.current().model = ""
 	tt := ui.NewTester(f.app.ChatView, 1100, 740)
-	tt.SetLocale(Locale)
+	tt.SetLocale(testLocale)
 	tt.Frame()
 	if !tt.HasText("先连接一个模型") {
 		t.Fatalf("texts %q", tt.Texts())
@@ -234,7 +241,7 @@ func TestChatWithoutModels(t *testing.T) {
 func TestSettingsSavesAPIKey(t *testing.T) {
 	f := newFixture(t, nil)
 	tt := ui.NewTester(f.app.SettingsView, 860, 620)
-	tt.SetLocale(Locale)
+	tt.SetLocale(testLocale)
 	tt.SetTitleBar(ui.TitleBar{Height: 52, Left: 78})
 	tt.Frame()
 	if !tt.HasText("使用 ChatGPT 登录") || !tt.HasText("Claude") || !tt.HasText("GitHub Copilot") {
@@ -276,7 +283,7 @@ func TestSettingsSavesAPIKey(t *testing.T) {
 func TestLoginPromptDialog(t *testing.T) {
 	f := newFixture(t, nil)
 	tt := ui.NewTester(f.app.SettingsView, 860, 620)
-	tt.SetLocale(Locale)
+	tt.SetLocale(testLocale)
 	f.app.settings.page = pageAPIKeys
 	tt.Frame()
 	flow := f.app.startLogin("cloudflare-workers-ai", loginAPIKey, "cf-key")
@@ -303,7 +310,7 @@ func TestLoginPromptDialog(t *testing.T) {
 func TestLoginDialogStates(t *testing.T) {
 	f := newFixture(t, nil)
 	tt := ui.NewTester(f.app.SettingsView, 860, 620)
-	tt.SetLocale(Locale)
+	tt.SetLocale(testLocale)
 	f.app.settings.login = &loginFlow{providerID: "github-copilot", name: "GitHub Copilot", open: true, code: "ABCD-1234", codeURL: "https://github.com/login/device", status: "等待授权"}
 	tt.Frame()
 	if !tt.HasText("ABCD-1234") {
@@ -330,7 +337,7 @@ func TestLoginDialogStates(t *testing.T) {
 func TestEndpointForm(t *testing.T) {
 	f := newFixture(t, nil)
 	tt := ui.NewTester(f.app.SettingsView, 860, 620)
-	tt.SetLocale(Locale)
+	tt.SetLocale(testLocale)
 	f.app.settings.page = pageEndpoints
 	tt.Frame()
 	if err := tt.Click("添加端点"); err != nil {

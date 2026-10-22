@@ -7,6 +7,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"worktony/internal/engine"
+	"worktony/locales"
 )
 
 type loginKind int
@@ -68,7 +69,7 @@ func (a *App) startLogin(providerID string, kind loginKind, key ...string) *logi
 		name = p.Name
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	f := &loginFlow{providerID: providerID, name: name, kind: kind, open: kind == loginOAuth, cancel: cancel, status: "正在连接…"}
+	f := &loginFlow{providerID: providerID, name: name, kind: kind, open: kind == loginOAuth, cancel: cancel, status: locales.LoginConnecting()}
 	a.settings.login = f
 	post := func(fn func()) {
 		a.host.Post(func() {
@@ -99,7 +100,7 @@ func (a *App) startLogin(providerID string, kind loginKind, key ...string) *logi
 				switch n.Kind {
 				case "auth_url":
 					f.url, f.instructions = n.URL, n.Message
-					f.status = "已在浏览器中打开登录页面"
+					f.status = locales.LoginBrowserOpened()
 					if a.host.OpenURL != nil {
 						a.host.OpenURL(n.URL)
 					}
@@ -132,7 +133,7 @@ func (a *App) startLogin(providerID string, kind loginKind, key ...string) *logi
 			switch {
 			case err == nil:
 				f.done, f.open = true, false
-				a.settings.toast = "已连接 " + f.name
+				a.settings.toast = locales.LoginConnected(f.name)
 				a.settings.keyEditing, a.settings.keyInput = "", ""
 				a.Refresh()
 			case errors.Is(err, context.Canceled) || ctx.Err() != nil:
@@ -154,7 +155,7 @@ func (f *loginFlow) answer(text string) {
 	}
 	f.reply <- answer{text: text}
 	f.prompt, f.reply = nil, nil
-	f.status = "正在验证…"
+	f.status = locales.LoginVerifying()
 }
 
 func (f *loginFlow) stop() {
@@ -189,12 +190,12 @@ func (a *App) loginDialog(c *ui.Context, p palette) {
 		ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
 			providerMark(c, f.providerID, f.name, 36)
 			ui.Column(c).Grow(1).Gap(2).Children(func() {
-				title := "登录 " + f.name
+				title := locales.LoginTitle(f.name)
 				if f.kind == loginAPIKey {
-					title = "配置 " + f.name
+					title = locales.LoginConfigureTitle(f.name)
 				}
 				ui.Text(c, title).Bold().FontSize(16)
-				ui.Text(c, "凭据保存在本机 auth.json，仅自己可读").FontSize(12).TextColor(t.TextMuted)
+				ui.Text(c, locales.LoginCredentialsNote()).FontSize(12).TextColor(t.TextMuted)
 			})
 		})
 		// A pasted code is the fallback of a browser sign-in, asked beside it.
@@ -203,10 +204,10 @@ func (a *App) loginDialog(c *ui.Context, p palette) {
 		case f.err != "":
 			a.errorCard(c, p, f.err)
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c, "关闭").Clicked() {
+				if ui.Button(c, locales.CommonClose()).Clicked() {
 					f.open = false
 				}
-				if ui.PrimaryButton(c, "重试").Clicked() {
+				if ui.PrimaryButton(c, locales.CommonRetry()).Clicked() {
 					a.startLogin(f.providerID, f.kind)
 				}
 			})
@@ -214,33 +215,33 @@ func (a *App) loginDialog(c *ui.Context, p palette) {
 		case f.prompt != nil && !manual:
 			a.promptForm(c, p, f)
 		case f.code != "":
-			ui.Text(c, "在浏览器中打开下面的网址，输入这个代码完成授权：").FontSize(13)
+			ui.Text(c, locales.LoginDeviceCodeHint()).FontSize(13)
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Padding(12, 16).Radius(12).Background(p.codeBg).Children(func() {
 				ui.Text(c, f.code).Font("monospace").FontSize(22).Bold().LetterSpacing(2).Selectable().Grow(1)
-				if iconButton(c, "copy-code", icCopy, "复制代码", p).Clicked() {
+				if iconButton(c, "copy-code", icCopy, locales.LoginCopyCode(), p).Clicked() {
 					c.Services().WriteClipboard(f.code)
-					c.Toast("已复制")
+					c.Toast(locales.CommonCopied())
 				}
 			})
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, f.codeURL).FontSize(12).TextColor(t.TextMuted).SingleLine().Grow(1).MinWidth(0)
-				if ui.Button(c, "打开网页").Clicked() {
+				if ui.Button(c, locales.LoginOpenPage()).Clicked() {
 					c.Services().OpenURL(f.codeURL)
 				}
 			})
-			waiting(c, "等待授权完成…")
+			waiting(c, locales.LoginWaiting())
 		case f.url != "":
-			ui.Text(c, "已在浏览器中打开登录页面，授权完成后会自动回到这里。").FontSize(13)
+			ui.Text(c, locales.LoginBrowserHint()).FontSize(13)
 			if f.instructions != "" {
 				ui.Text(c, f.instructions).FontSize(12).TextColor(t.TextMuted)
 			}
 			ui.Row(c).Gap(8).Children(func() {
-				if ui.Button(c, "重新打开浏览器").Clicked() {
+				if ui.Button(c, locales.LoginReopenBrowser()).Clicked() {
 					c.Services().OpenURL(f.url)
 				}
-				if ui.Button(c, "复制登录链接").Clicked() {
+				if ui.Button(c, locales.LoginCopyLink()).Clicked() {
 					c.Services().WriteClipboard(f.url)
-					c.Toast("已复制登录链接")
+					c.Toast(locales.LoginLinkCopied())
 				}
 			})
 			waiting(c, f.status)
@@ -262,10 +263,10 @@ func (a *App) loginDialog(c *ui.Context, p palette) {
 			ui.Link(c, label, l.URL).FontSize(12)
 		}
 		ui.Row(c).Gap(8).Justify(ui.End).Margin(4, 0, 0, 0).Children(func() {
-			if ui.Button(c, "取消").Clicked() {
+			if ui.Button(c, locales.CommonCancel()).Clicked() {
 				f.stop()
 			}
-			if f.prompt != nil && ui.PrimaryButton(c, "继续").Disabled(!f.ready()).Clicked() {
+			if f.prompt != nil && ui.PrimaryButton(c, locales.CommonContinue()).Disabled(!f.ready()).Clicked() {
 				f.submit()
 			}
 		})
@@ -301,7 +302,7 @@ func (a *App) promptForm(c *ui.Context, p palette, f *loginFlow) {
 		in.Password()
 	}
 	if pr.Kind == "manual_code" {
-		ui.Text(c, "如果浏览器没有自动跳回，可以把页面上显示的代码或完整回调网址粘贴到这里。").FontSize(12).TextColor(t.TextMuted)
+		ui.Text(c, locales.LoginManualCodeHint()).FontSize(12).TextColor(t.TextMuted)
 	}
 	if in.Submitted() && f.ready() {
 		f.submit()

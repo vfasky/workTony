@@ -7,6 +7,7 @@ import (
 	"github.com/egoist/mygo/ui/markdown"
 
 	"worktony/internal/engine"
+	"worktony/locales"
 )
 
 func (a *App) messages(c *ui.Context, p palette, tb *tab) {
@@ -20,7 +21,7 @@ func (a *App) messages(c *ui.Context, p palette, tb *tab) {
 				a.item(c, p, tb, items, i)
 			})
 		})
-	}).Grow(1).Padding(8, 0, 28, 0).Gap(20).Label("消息")
+	}).Grow(1).Padding(8, 0, 28, 0).Gap(20).Label(locales.MessageList())
 }
 
 func (a *App) item(c *ui.Context, p palette, tb *tab, items []*engine.Item, i int) {
@@ -32,7 +33,7 @@ func (a *App) item(c *ui.Context, p palette, tb *tab, items []*engine.Item, i in
 			b := ui.Text(c, it.Text).Selectable().Padding(10, 14).Radius(18).Background(p.userBubble).MaxWidth(560).LineHeight(1.5)
 			if it.Queued {
 				b.Opacity(0.55)
-				ui.Text(c, "等待发送").FontSize(11).TextColor(t.TextMuted)
+				ui.Text(c, locales.MessageQueued()).FontSize(11).TextColor(t.TextMuted)
 			}
 		})
 	case engine.RoleNotice:
@@ -71,14 +72,14 @@ func (a *App) item(c *ui.Context, p palette, tb *tab, items []*engine.Item, i in
 			if it.Streaming && len(it.Parts) == 0 {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Spinner(c).Size(14, 14)
-					ui.Text(c, "正在思考…").FontSize(13).TextColor(t.TextMuted)
+					ui.Text(c, locales.MessageThinking()).FontSize(13).TextColor(t.TextMuted)
 				})
 			}
 			if it.Error != "" {
 				a.errorCard(c, p, it.Error)
 			}
 			if it.Aborted {
-				ui.Text(c, "已停止生成").FontSize(12).TextColor(t.TextMuted)
+				ui.Text(c, locales.MessageStopped()).FontSize(12).TextColor(t.TextMuted)
 			}
 		})
 	}
@@ -87,9 +88,9 @@ func (a *App) item(c *ui.Context, p palette, tb *tab, items []*engine.Item, i in
 func (a *App) thinking(c *ui.Context, p palette, tb *tab, key, text string, live bool) {
 	t := c.Theme()
 	open := tb.open["think-"+key]
-	label := "思考过程"
+	label := locales.MessageThoughts()
 	if live {
-		label = "思考中…"
+		label = locales.MessageThoughtsLive()
 	}
 	trigger := ui.ButtonBase(c.Key("think-"+key)).AlignSelf(ui.Start).Gap(6).AlignItems(ui.Center).TextColor(t.TextMuted).Label(label).Padding(2, 0)
 	if trigger.Hovered() {
@@ -113,23 +114,23 @@ func (a *App) thinking(c *ui.Context, p palette, tb *tab, key, text string, live
 	}
 }
 
-var toolTitles = map[string]string{
-	"read":  "读取",
-	"bash":  "执行命令",
-	"edit":  "编辑",
-	"write": "写入",
-	"grep":  "搜索内容",
-	"find":  "查找文件",
-	"ls":    "列出目录",
+var toolTitles = map[string]func() string{
+	"read":  locales.ToolRead,
+	"bash":  locales.ToolBash,
+	"edit":  locales.ToolEdit,
+	"write": locales.ToolWrite,
+	"grep":  locales.ToolGrep,
+	"find":  locales.ToolFind,
+	"ls":    locales.ToolLs,
 }
 
 func (a *App) toolCard(c *ui.Context, p palette, tb *tab, tool *engine.Tool) {
 	t := c.Theme()
 	key := "tool-" + tool.ID
 	open := tb.open[key]
-	title := toolTitles[tool.Name]
-	if title == "" {
-		title = tool.Name
+	title := tool.Name
+	if name := toolTitles[tool.Name]; name != nil {
+		title = name()
 	}
 	ui.Column(c.Key(key)).Radius(10).Border(1, p.hairline).Background(p.card).Clip().Children(func() {
 		head := ui.ButtonBase(c.Key(key+"-head")).Padding(8, 12).Gap(8).AlignItems(ui.Center).Label(title + " " + tool.Summary)
@@ -142,7 +143,7 @@ func (a *App) toolCard(c *ui.Context, p palette, tb *tab, tool *engine.Tool) {
 			ui.Text(c, tool.Summary).Font("monospace").FontSize(12).TextColor(t.TextMuted).SingleLine().Grow(1).MinWidth(0)
 			switch tool.Status {
 			case engine.ToolPending, engine.ToolRunning:
-				ui.Spinner(c).Size(12, 12).Label("运行中")
+				ui.Spinner(c).Size(12, 12).Label(locales.ToolRunning())
 			case engine.ToolDone:
 				if d := formatDuration(tool.Duration); d != "" {
 					ui.Text(c, d).FontSize(11).TextColor(t.TextMuted)
@@ -163,7 +164,7 @@ func (a *App) toolCard(c *ui.Context, p palette, tb *tab, tool *engine.Tool) {
 			ui.Box(c).Height(1).Background(p.hairline)
 			out := clip(tool.Output, 400, 24_000)
 			if out == "" {
-				out = "（无输出）"
+				out = locales.ToolNoOutput()
 			}
 			ui.Scroll(c).MaxHeight(280).Background(p.codeBg).Children(func() {
 				o := ui.Text(c, out).Font("monospace").FontSize(12).Selectable().Padding(10, 12).LineHeight(1.45)
@@ -182,7 +183,7 @@ func (a *App) errorCard(c *ui.Context, p palette, msg string) {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
 			ui.Text(c, msg).FontSize(13).Selectable()
 			if authError(msg) {
-				if ui.Button(c, "前往设置").Clicked() {
+				if ui.Button(c, locales.MessageOpenSettings()).Clicked() {
 					a.host.OpenSettings(pageAccounts)
 				}
 			}

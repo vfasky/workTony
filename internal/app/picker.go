@@ -5,6 +5,8 @@ import (
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/egoist/mygo/ui"
+
+	"worktony/locales"
 )
 
 type pickerState struct {
@@ -15,15 +17,15 @@ type pickerState struct {
 
 func (a *App) modelPicker(c *ui.Context, p palette, tb *tab) {
 	t := c.Theme()
-	label := "选择模型"
+	label := locales.PickerChooseModel()
 	if m, ok := a.model(tb.model); ok {
 		label = m.Name
 	} else if !a.loaded {
-		label = "加载中…"
+		label = locales.CommonLoading()
 	} else if len(a.models) == 0 {
-		label = "未连接模型"
+		label = locales.PickerNoModel()
 	}
-	anchor := ui.ButtonBase(c.Key("model-picker")).Padding(5, 8, 5, 10).Radius(8).Gap(5).AlignItems(ui.Center).TextColor(t.TextMuted).Label("模型: " + label)
+	anchor := ui.ButtonBase(c.Key("model-picker")).Padding(5, 8, 5, 10).Radius(8).Gap(5).AlignItems(ui.Center).TextColor(t.TextMuted).Label(locales.PickerModelLabel(label))
 	if anchor.Hovered() || a.picker.open {
 		anchor.Background(p.subtle).TextColor(t.Text)
 	}
@@ -41,7 +43,7 @@ func (a *App) modelPicker(c *ui.Context, p palette, tb *tab) {
 	ui.PopoverBase(c, anchor, &a.picker.open, func(panel ui.Element) {
 		panel.Width(340).Radius(12).Background(p.card).Border(1, p.hairline).
 			Shadow(0, 14, 36, 0, ui.RGBA(0, 0, 0, 0.16)).Margin(6, 0, 6, 0).Padding(6).Gap(4)
-		ui.SearchField(c, &a.picker.query).Placeholder("搜索模型").AutoFocus().Margin(2, 2, 4, 2)
+		ui.SearchField(c, &a.picker.query).Placeholder(locales.PickerSearch()).AutoFocus().Margin(2, 2, 4, 2)
 		q := strings.ToLower(strings.TrimSpace(a.picker.query))
 		ui.Scroll(c).MaxHeight(320).Children(func() {
 			group := ""
@@ -67,7 +69,7 @@ func (a *App) modelPicker(c *ui.Context, p palette, tb *tab) {
 						}
 					})
 					if m.Reasoning {
-						ui.Icon(c, icBulb).Size(12, 12).TextColor(t.TextMuted).Tooltip("支持推理")
+						ui.Icon(c, icBulb).Size(12, 12).TextColor(t.TextMuted).Tooltip(locales.PickerReasoning())
 					}
 					if m.Ref == tb.model {
 						ui.Icon(c, icCheck).Size(14, 14).TextColor(t.Accent)
@@ -79,17 +81,17 @@ func (a *App) modelPicker(c *ui.Context, p palette, tb *tab) {
 				}
 			}
 			if shown == 0 {
-				ui.Text(c, "没有匹配的模型").FontSize(12).TextColor(t.TextMuted).Padding(12)
+				ui.Text(c, locales.PickerNoMatch()).FontSize(12).TextColor(t.TextMuted).Padding(12)
 			}
 		})
 		ui.Box(c).Height(1).Background(p.hairline).Margin(2, 4)
-		manage := ui.ButtonBase(c.Key("pick-manage")).Padding(7, 10).Radius(7).Gap(8).AlignItems(ui.Center).TextColor(t.TextMuted).Label("管理账号与 API Key")
+		manage := ui.ButtonBase(c.Key("pick-manage")).Padding(7, 10).Radius(7).Gap(8).AlignItems(ui.Center).TextColor(t.TextMuted).Label(locales.PickerManage())
 		if manage.Hovered() {
 			manage.Background(p.subtle).TextColor(t.Text)
 		}
 		manage.Children(func() {
 			ui.Icon(c, icSettings).Size(14, 14)
-			ui.Text(c, "管理账号与 API Key…").FontSize(12)
+			ui.Text(c, locales.PickerManageEllipsis()).FontSize(12)
 		})
 		if manage.Clicked() {
 			a.picker.open = false
@@ -98,19 +100,19 @@ func (a *App) modelPicker(c *ui.Context, p palette, tb *tab) {
 	})
 }
 
-var thinkingNames = map[ai.ModelThinkingLevel]string{
-	ai.ThinkingOff:     "关闭",
-	ai.ThinkingMinimal: "极简",
-	ai.ThinkingLow:     "低",
-	ai.ThinkingMedium:  "中",
-	ai.ThinkingHigh:    "高",
-	"xhigh":            "超高",
-	ai.ThinkingMax:     "最高",
+var thinkingNames = map[ai.ModelThinkingLevel]func() string{
+	ai.ThinkingOff:     locales.ThinkingOff,
+	ai.ThinkingMinimal: locales.ThinkingMinimal,
+	ai.ThinkingLow:     locales.ThinkingLow,
+	ai.ThinkingMedium:  locales.ThinkingMedium,
+	ai.ThinkingHigh:    locales.ThinkingHigh,
+	"xhigh":            locales.ThinkingXHigh,
+	ai.ThinkingMax:     locales.ThinkingMax,
 }
 
 func thinkingName(l ai.ModelThinkingLevel) string {
-	if s := thinkingNames[l]; s != "" {
-		return s
+	if name := thinkingNames[l]; name != nil {
+		return name()
 	}
 	return string(l)
 }
@@ -122,7 +124,7 @@ func (a *App) thinkingPicker(c *ui.Context, p palette, tb *tab) {
 		return
 	}
 	current := tb.chat.Thinking()
-	anchor := chip(c, "thinking", icBulb, "推理: "+thinkingName(current), p).Tooltip("推理强度")
+	anchor := chip(c, "thinking", icBulb, locales.ThinkingLabel(thinkingName(current)), p).Tooltip(locales.ThinkingTooltip())
 	if anchor.Clicked() {
 		a.picker.thinkOpen = !a.picker.thinkOpen
 	}

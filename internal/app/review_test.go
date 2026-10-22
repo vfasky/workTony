@@ -18,7 +18,7 @@ func TestSendFailureKeepsDraft(t *testing.T) {
 	f.app.models = nil
 	f.app.current().model = ""
 	tt := ui.NewTester(f.app.ChatView, 1100, 740)
-	tt.SetLocale(Locale)
+	tt.SetLocale(testLocale)
 	tt.Frame()
 	if err := tt.Click("消息"); err != nil {
 		t.Fatal(err)
@@ -53,7 +53,7 @@ func (f *fixture) modelOf(t *testing.T, ref string) engine.Model {
 func TestNewChatTakesDefaultModel(t *testing.T) {
 	f := newFixture(t, mockLLM(t, "好"))
 	tt := ui.NewTester(f.app.ChatView, 1100, 740)
-	tt.SetLocale(Locale)
+	tt.SetLocale(testLocale)
 	tt.Frame()
 	first := f.app.current()
 	if first.model != "mock/m1" {
@@ -64,7 +64,7 @@ func TestNewChatTakesDefaultModel(t *testing.T) {
 
 	// The settings window's default model changes while the chat runs m1.
 	st := ui.NewTester(f.app.SettingsView, 860, 620)
-	st.SetLocale(Locale)
+	st.SetLocale(testLocale)
 	f.app.settings.page = pageGeneral
 	st.Frame()
 	f.app.setDefaultModel(f.modelOf(t, "mock/m2"))
@@ -102,7 +102,7 @@ func TestNewChatTakesDefaultModel(t *testing.T) {
 func TestComposerShowsChatDirectory(t *testing.T) {
 	f := newFixture(t, mockLLM(t, "好"))
 	tt := ui.NewTester(f.app.ChatView, 1100, 740)
-	tt.SetLocale(Locale)
+	tt.SetLocale(testLocale)
 	tt.Frame()
 	started := f.app.current()
 	f.app.send(nil, "hi")
@@ -117,13 +117,13 @@ func TestComposerShowsChatDirectory(t *testing.T) {
 	if tb := f.app.current(); tb == started || tb.chat != nil {
 		t.Fatal("choosing a directory from a started chat should open a new chat")
 	}
-	if !tt.HasText("other-project") {
+	if !tt.HasText("工作目录 other-project") {
 		t.Fatalf("the new chat should show the new directory: %q", tt.Texts())
 	}
 	f.app.selected = started.id
 	tt.Advance(10 * time.Second) // the toast goes
 	tt.Frame()
-	if !tt.HasText(filepath.Base(firstDir)) || tt.HasText("other-project") {
+	if !tt.HasText("工作目录 "+filepath.Base(firstDir)) || tt.HasText("工作目录 other-project") {
 		t.Fatalf("the started chat should show its own directory %q: %q", firstDir, tt.Texts())
 	}
 	if started.chat.CWD() != firstDir {
@@ -143,5 +143,25 @@ func TestComposerShowsChatDirectory(t *testing.T) {
 	tt.Frame()
 	if tb := f.app.current(); tb == started || !f.app.prefs.FullTools || !tt.HasText("可修改") {
 		t.Fatalf("switching tools should open a new chat with them: full %v, texts %q", f.app.prefs.FullTools, tt.Texts())
+	}
+}
+
+// A development build marks both windows DEBUG; the app built for users
+// shows no mark.
+func TestDebugBadge(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		f := newFixture(t, nil)
+		f.app.host.Debug = debug
+		for name, view := range map[string]func(*ui.Context){"chat": f.app.ChatView, "settings": f.app.SettingsView} {
+			tt := ui.NewTester(view, 1100, 740)
+			tt.SetLocale(testLocale)
+			tt.Frame()
+			if tt.HasText("DEBUG") != debug {
+				t.Errorf("%s window with debug %v shows DEBUG: %v", name, debug, tt.HasText("DEBUG"))
+			}
+			if debug {
+				shot(t, tt, name+"-debug")
+			}
+		}
 	}
 }

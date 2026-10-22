@@ -2,13 +2,16 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/egoist/mygo/i18n"
 	"github.com/egoist/mygo/ui"
 
 	"worktony/internal/engine"
+	"worktony/locales"
 )
 
 // Pages of the settings window.
@@ -78,21 +81,25 @@ func (a *App) SettingsView(c *ui.Context) {
 			nav.Background(p.sidebar)
 		}
 		nav.Children(func() {
-			ui.Box(c).Height(titleBarHeight).Shrink(0).DragWindow()
+			ui.Row(c).Height(titleBarHeight).Shrink(0).Padding(0, 14).AlignItems(ui.Center).Justify(ui.End).DragWindow().Children(func() {
+				a.debugBadge(c)
+			})
 			list := ui.Sidebar(c, &a.settings.page, func() {
-				ui.SidebarItem(c, pageAccounts, icUser, "账号登录")
-				ui.SidebarItem(c, pageAPIKeys, icKey, "API Key")
-				ui.SidebarItem(c, pageEndpoints, icPlug, "自定义端点")
-				ui.SidebarItem(c, pageGeneral, icSliders, "通用")
-			}).Grow(1).Label("设置")
+				ui.SidebarItem(c, pageAccounts, icUser, locales.SettingsAccounts())
+				ui.SidebarItem(c, pageAPIKeys, icKey, locales.SettingsAPIKeys())
+				ui.SidebarItem(c, pageEndpoints, icPlug, locales.SettingsEndpoints())
+				ui.SidebarItem(c, pageGeneral, icSliders, locales.SettingsGeneral())
+			}).Grow(1).Label(locales.SettingsTitle())
 			list.Background(ui.Transparent)
 		})
 		ui.Box(c).Width(1).Background(p.hairline)
 		bar := c.TitleBar()
 		ui.Column(c).Grow(1).MinWidth(0).Background(p.pane).Children(func() {
-			titles := map[string]string{pageAccounts: "账号登录", pageAPIKeys: "API Key", pageEndpoints: "自定义端点", pageGeneral: "通用"}
+			titles := map[string]func() string{pageAccounts: locales.SettingsAccounts, pageAPIKeys: locales.SettingsAPIKeys, pageEndpoints: locales.SettingsEndpoints, pageGeneral: locales.SettingsGeneral}
 			ui.Row(c).Height(titleBarHeight).Shrink(0).Padding(0, bar.Right+20, 0, 28).AlignItems(ui.Center).DragWindow().Children(func() {
-				ui.Text(c, titles[a.settings.page]).Bold().FontSize(15)
+				if title := titles[a.settings.page]; title != nil {
+					ui.Text(c, title()).Bold().FontSize(15)
+				}
 			})
 			ui.Scroll(c).Grow(1).Children(func() {
 				ui.Column(c).Padding(4, 28, 32, 28).Gap(12).MaxWidth(680).Children(func() {
@@ -124,7 +131,7 @@ func card(c *ui.Context, key string, p palette) ui.Element {
 
 func (a *App) accountsPage(c *ui.Context, p palette) {
 	t := c.Theme()
-	intro(c, "用已有的订阅账号登录，无需 API Key。登录会在浏览器中完成，凭据只保存在本机。")
+	intro(c, locales.AccountsIntro())
 	if !a.loaded {
 		ui.Spinner(c)
 		return
@@ -140,29 +147,29 @@ func (a *App) accountsPage(c *ui.Context, p palette) {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, oauthName(pr.ID)).Bold()
 					if pr.OAuth.Subscription {
-						ui.Text(c, "订阅").FontSize(10).TextColor(t.Accent).Padding(1, 6).Radius(6).Background(p.accentSoft)
+						ui.Text(c, locales.AccountsSubscription()).FontSize(10).TextColor(t.Accent).Padding(1, 6).Radius(6).Background(p.accentSoft)
 					}
 				})
 				ui.Text(c, oauthDesc(pr)).FontSize(12).TextColor(t.TextMuted).SingleLine()
 			})
 			switch {
 			case a.loggingIn(pr.ID):
-				ui.Spinner(c).Size(16, 16).Label("登录中")
+				ui.Spinner(c).Size(16, 16).Label(locales.AccountsSigningIn())
 			case oauth:
 				ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
 					ui.Box(c).Size(7, 7).Radius(4).Background(p.success)
-					ui.Text(c, "已登录").FontSize(12).TextColor(t.TextMuted)
+					ui.Text(c, locales.AccountsSignedIn()).FontSize(12).TextColor(t.TextMuted)
 				})
-				if ui.Button(c.Key("logout-"+pr.ID), "退出").Clicked() {
+				if ui.Button(c.Key("logout-"+pr.ID), locales.AccountsSignOut()).Clicked() {
 					a.logout(pr.ID, oauthName(pr.ID))
 				}
 			default:
 				// ChatGPT leads; the others are quieter.
 				var b ui.Element
 				if pr.ID == "openai" {
-					b = ui.PrimaryButton(c.Key("login-"+pr.ID), "使用 ChatGPT 登录")
+					b = ui.PrimaryButton(c.Key("login-"+pr.ID), locales.ChatSignInWithChatGPT())
 				} else {
-					b = ui.Button(c.Key("login-"+pr.ID), "登录").Label("登录 " + oauthName(pr.ID))
+					b = ui.Button(c.Key("login-"+pr.ID), locales.AccountsSignIn()).Label(locales.LoginTitle(oauthName(pr.ID)))
 				}
 				if b.Clicked() {
 					a.startLogin(pr.ID, loginOAuth)
@@ -170,7 +177,7 @@ func (a *App) accountsPage(c *ui.Context, p palette) {
 			}
 		})
 	}
-	ui.Text(c, "登录 ChatGPT 使用的是 Codex 订阅通道，额度与 ChatGPT 账户共享。").FontSize(12).TextColor(t.TextMuted).Margin(6, 0, 0, 0)
+	ui.Text(c, locales.AccountsChatGPTNote()).FontSize(12).TextColor(t.TextMuted).Margin(6, 0, 0, 0)
 }
 
 func (a *App) logout(id, name string) {
@@ -178,10 +185,10 @@ func (a *App) logout(id, name string) {
 		err := a.eng.Logout(context.Background(), id)
 		a.host.Post(func() {
 			if err != nil {
-				a.settings.toast = "退出失败: " + err.Error()
+				a.settings.toast = locales.AccountsSignOutFailed(err.Error())
 				return
 			}
-			a.settings.toast = "已退出 " + name
+			a.settings.toast = locales.AccountsSignedOut(name)
 			a.Refresh()
 		})
 	}()
@@ -189,8 +196,8 @@ func (a *App) logout(id, name string) {
 
 func (a *App) apiKeysPage(c *ui.Context, p palette) {
 	t := c.Theme()
-	intro(c, "填入服务商的 API Key 即可使用它的全部模型。密钥保存在 "+shortPath(a.eng.AgentDir())+"/auth.json；环境变量中已有的密钥会自动识别。")
-	ui.SearchField(c, &a.settings.keyQuery).Placeholder("搜索服务商").Margin(0, 0, 4, 0)
+	intro(c, locales.KeysIntro(shortPath(a.eng.AgentDir())))
+	ui.SearchField(c, &a.settings.keyQuery).Placeholder(locales.KeysSearch()).Margin(0, 0, 4, 0)
 	if !a.loaded {
 		ui.Spinner(c)
 		return
@@ -215,8 +222,8 @@ func (a *App) apiKeysPage(c *ui.Context, p palette) {
 		a.apiKeyRow(c, p, pr)
 	}
 	if hidden > 0 {
-		more := ui.ButtonBase(c.Key("show-all")).Padding(8, 4).TextColor(t.Accent).Label("显示全部")
-		more.Children(func() { ui.Text(c, "显示其余 "+itoa(hidden)+" 个服务商").FontSize(13) })
+		more := ui.ButtonBase(c.Key("show-all")).Padding(8, 4).TextColor(t.Accent).Label(locales.KeysShowAll())
+		more.Children(func() { ui.Text(c, locales.KeysShowMore(hidden)).FontSize(13) })
 		if more.Clicked() {
 			a.settings.showAll = true
 		}
@@ -238,21 +245,21 @@ func (a *App) apiKeyRow(c *ui.Context, p palette, pr engine.Provider) {
 				}
 			})
 			if a.loggingIn(pr.ID) && a.settings.login.kind == loginAPIKey {
-				ui.Spinner(c).Size(16, 16).Label("保存中")
+				ui.Spinner(c).Size(16, 16).Label(locales.KeysSaving())
 				return
 			}
 			if editing {
 				return
 			}
 			stored := pr.State.Source == "stored" && pr.State.Kind == engine.KindAPIKey
-			label := "设置"
+			label, name := locales.KeysSet(), locales.KeysSetLabel(pr.Name)
 			if stored {
-				label = "更换"
+				label, name = locales.KeysChange(), locales.KeysChangeLabel(pr.Name)
 			}
-			if ui.Button(c.Key("edit-"+pr.ID), label).Label(label + " " + pr.Name + " API Key").Clicked() {
+			if ui.Button(c.Key("edit-"+pr.ID), label).Label(name).Clicked() {
 				a.settings.keyEditing, a.settings.keyInput, a.settings.keyErr = pr.ID, "", ""
 			}
-			if stored && iconButton(c, "remove-"+pr.ID, icTrash, "移除 API Key", p).Clicked() {
+			if stored && iconButton(c, "remove-"+pr.ID, icTrash, locales.KeysRemove(), p).Clicked() {
 				a.logout(pr.ID, pr.Name)
 			}
 		})
@@ -260,18 +267,18 @@ func (a *App) apiKeyRow(c *ui.Context, p palette, pr engine.Provider) {
 			return
 		}
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			in := ui.TextInput(c.Key("key-input-"+pr.ID), &a.settings.keyInput).Password().Placeholder("粘贴 API Key").AutoFocus().Grow(1).Label(pr.Name + " API Key")
-			save := ui.PrimaryButton(c.Key("save-"+pr.ID), "保存").Label("保存 " + pr.Name + " API Key").Disabled(strings.TrimSpace(a.settings.keyInput) == "" || a.loggingIn(pr.ID))
+			in := ui.TextInput(c.Key("key-input-"+pr.ID), &a.settings.keyInput).Password().Placeholder(locales.KeysPaste()).AutoFocus().Grow(1).Label(locales.KeysInputLabel(pr.Name))
+			save := ui.PrimaryButton(c.Key("save-"+pr.ID), locales.CommonSave()).Label(locales.KeysSaveLabel(pr.Name)).Disabled(strings.TrimSpace(a.settings.keyInput) == "" || a.loggingIn(pr.ID))
 			if (save.Clicked() || in.Submitted()) && strings.TrimSpace(a.settings.keyInput) != "" {
 				a.settings.keyErr = ""
 				a.startLogin(pr.ID, loginAPIKey, a.settings.keyInput)
 			}
-			if ui.Button(c.Key("cancel-"+pr.ID), "取消").Clicked() {
+			if ui.Button(c.Key("cancel-"+pr.ID), locales.CommonCancel()).Clicked() {
 				a.settings.keyEditing, a.settings.keyInput, a.settings.keyErr = "", "", ""
 			}
 		})
 		if url := keyURLs[pr.ID]; url != "" {
-			ui.Link(c, "获取 "+pr.Name+" API Key ↗", url).FontSize(12)
+			ui.Link(c, locales.KeysGet(pr.Name), url).FontSize(12)
 		}
 		if a.settings.keyErr != "" {
 			ui.Text(c, a.settings.keyErr).FontSize(12).TextColor(t.Danger).Selectable()
@@ -283,28 +290,26 @@ func keyStatus(pr engine.Provider) (string, bool) {
 	st := pr.State
 	switch {
 	case !st.Configured:
-		return "未配置", false
+		return locales.KeyStatusNotConfigured(), false
 	case st.Source == "stored" && st.Kind == engine.KindOAuth:
-		return "已通过账号登录", true
+		return locales.KeyStatusOAuth(), true
 	case st.Source == "stored":
-		return "已保存 API Key", true
+		return locales.KeyStatusStored(), true
+	case st.Source == "environment" && st.Label != "":
+		return locales.KeyStatusEnvNamed(st.Label), true
 	case st.Source == "environment":
-		label := "环境变量"
-		if st.Label != "" {
-			label += " " + st.Label
-		}
-		return "来自" + label, true
+		return locales.KeyStatusEnv(), true
 	}
-	return "已配置", true
+	return locales.KeyStatusConfigured(), true
 }
 
 func (a *App) endpointsPage(c *ui.Context, p palette) {
 	t := c.Theme()
-	intro(c, "接入 Ollama、LM Studio、vLLM，或任意 OpenAI / Anthropic 兼容的网关。地址和模型写入 models.json，密钥保存在 auth.json。")
+	intro(c, locales.EndpointsIntro())
 	ui.Row(c).Children(func() {
 		add := ui.PrimaryButton(c, "").Children(func() {
 			ui.Icon(c, icPlus)
-			ui.Text(c, "添加端点").SingleLine()
+			ui.Text(c, locales.EndpointsAdd()).SingleLine()
 		})
 		if add.Clicked() {
 			a.settings.form = &endpointForm{open: true, api: engine.CustomAPIs[0].ID}
@@ -313,7 +318,7 @@ func (a *App) endpointsPage(c *ui.Context, p palette) {
 	if len(a.customs) == 0 {
 		ui.Column(c).Padding(28).Radius(12).Border(1, p.hairline).Center().Gap(6).Children(func() {
 			ui.Icon(c, icGlobe).FontSize(22).TextColor(t.TextMuted)
-			ui.Text(c, "还没有自定义端点").TextColor(t.TextMuted)
+			ui.Text(c, locales.EndpointsEmpty()).TextColor(t.TextMuted)
 		})
 	}
 	for _, cp := range a.customs {
@@ -328,27 +333,27 @@ func (a *App) endpointsPage(c *ui.Context, p palette) {
 						name = cp.ID
 					}
 					ui.Text(c, name).Bold()
-					ui.Text(c, itoa(len(cp.Models))+" 个模型").FontSize(11).TextColor(t.TextMuted)
+					ui.Text(c, locales.EndpointsModelCount(len(cp.Models))).FontSize(11).TextColor(t.TextMuted)
 				})
 				ui.Text(c, cp.BaseURL).Font("monospace").FontSize(12).TextColor(t.TextMuted).SingleLine()
 			})
-			if ui.Button(c.Key("ep-edit-"+cp.ID), "编辑").Clicked() {
+			if ui.Button(c.Key("ep-edit-"+cp.ID), locales.CommonEdit()).Clicked() {
 				a.settings.form = &endpointForm{open: true, editing: cp.ID, name: cp.Name, id: cp.ID, idTouched: true, baseURL: cp.BaseURL, api: cp.API, models: strings.Join(cp.Models, "\n")}
 			}
-			if iconButton(c, "ep-del-"+cp.ID, icTrash, "删除端点", p).Clicked() {
+			if iconButton(c, "ep-del-"+cp.ID, icTrash, locales.EndpointsDelete(), p).Clicked() {
 				a.settings.deleting, a.settings.confirmDelete = cp.ID, true
 			}
 		})
 	}
 	if a.settings.confirmDelete {
-		switch ui.AlertDialog(c, &a.settings.confirmDelete, "删除端点 "+a.settings.deleting+"？", "它的配置和保存的密钥都会被移除。", "取消", "删除") {
+		switch ui.AlertDialog(c, &a.settings.confirmDelete, locales.EndpointsDeleteTitle(a.settings.deleting), locales.EndpointsDeleteMessage(), locales.CommonCancel(), locales.CommonDelete()) {
 		case 1:
 			id := a.settings.deleting
 			go func() {
 				err := a.eng.DeleteCustomProvider(context.Background(), id)
 				a.host.Post(func() {
 					if err != nil {
-						a.settings.toast = "删除失败: " + err.Error()
+						a.settings.toast = locales.EndpointsDeleteFailed(err.Error())
 					}
 					a.Refresh()
 				})
@@ -357,11 +362,13 @@ func (a *App) endpointsPage(c *ui.Context, p palette) {
 	}
 }
 
+// presets fill the endpoint dialog; the last, without a name, is any
+// OpenAI compatible gateway.
 var presets = []struct{ name, id, url string }{
 	{"Ollama", "ollama", "http://localhost:11434/v1"},
 	{"LM Studio", "lmstudio", "http://localhost:1234/v1"},
 	{"vLLM", "vllm", "http://localhost:8000/v1"},
-	{"OpenAI 兼容", "", "https://"},
+	{"", "", "https://"},
 }
 
 var idUnsafe = regexp.MustCompile(`[^a-z0-9._-]+`)
@@ -384,21 +391,23 @@ func (a *App) endpointDialog(c *ui.Context, p palette) {
 		backdrop.Background(ui.RGBA(0, 0, 0, 0.28))
 		panel.Width(520).Padding(22).Radius(16).Background(p.card).Border(1, p.hairline).Gap(14).
 			Shadow(0, 24, 60, 0, ui.RGBA(0, 0, 0, 0.25))
-		title := "添加端点"
+		title := locales.EndpointsAdd()
 		if f.editing != "" {
-			title = "编辑端点"
+			title = locales.EndpointsEdit()
 		}
 		ui.Text(c, title).Bold().FontSize(16)
 		if f.editing == "" {
 			ui.Row(c).Gap(6).Wrap().Children(func() {
-				for _, pre := range presets {
-					b := chip(c, "preset-"+pre.name, nil, pre.name, p).Border(1, p.hairline)
+				for i, pre := range presets {
+					label := pre.name
+					if label == "" {
+						label = locales.EndpointsPresetOpenAI()
+					}
+					b := chip(c, "preset-"+itoa(i), nil, label, p).Border(1, p.hairline)
 					if b.Clicked() {
-						f.name, f.baseURL, f.api = pre.name, pre.url, engine.CustomAPIs[0].ID
+						f.name, f.id, f.baseURL, f.api = pre.name, pre.id, pre.url, engine.CustomAPIs[0].ID
 						if pre.id != "" {
-							f.id, f.idTouched = pre.id, false
-						} else {
-							f.name, f.id = "", ""
+							f.idTouched = false
 						}
 					}
 				}
@@ -414,10 +423,10 @@ func (a *App) endpointDialog(c *ui.Context, p palette) {
 			ui.Text(c, f.err).FontSize(12).TextColor(t.Danger).Selectable()
 		}
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			if ui.Button(c, "取消").Clicked() {
+			if ui.Button(c, locales.CommonCancel()).Clicked() {
 				f.open = false
 			}
-			if ui.PrimaryButton(c, "保存").Disabled(f.busy).Clicked() {
+			if ui.PrimaryButton(c, locales.CommonSave()).Disabled(f.busy).Clicked() {
 				a.saveEndpoint(f)
 			}
 		})
@@ -430,25 +439,25 @@ func (a *App) endpointDialog(c *ui.Context, p palette) {
 func (a *App) endpointFields(c *ui.Context, f *endpointForm) {
 	ui.Row(c).Gap(12).AlignItems(ui.Start).Children(func() {
 		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
-			ui.Field(c, "名称", func() {
-				if ui.TextInput(c.Key("ep-name"), &f.name).Placeholder("例如 公司网关").AutoFocus().Changed() && !f.idTouched && f.editing == "" {
+			ui.Field(c, locales.EndpointsName(), func() {
+				if ui.TextInput(c.Key("ep-name"), &f.name).Placeholder(locales.EndpointsNamePlaceholder()).AutoFocus().Changed() && !f.idTouched && f.editing == "" {
 					f.id = slug(f.name)
 				}
 			})
 		})
 		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
 			ui.Field(c, "ID", func() {
-				in := ui.TextInput(c.Key("ep-id"), &f.id).Placeholder("例如 my-gateway").ReadOnly(f.editing != "")
+				in := ui.TextInput(c.Key("ep-id"), &f.id).Placeholder(locales.EndpointsIDPlaceholder()).ReadOnly(f.editing != "")
 				if in.Changed() {
 					f.idTouched = true
 				}
-			}).Description("模型显示为 " + orDash(f.id) + "/<模型 ID>")
+			}).Description(locales.EndpointsIDDescription(orDash(f.id)))
 		})
 	})
 	ui.Field(c, "Base URL", func() {
 		ui.TextInput(c.Key("ep-url"), &f.baseURL).Placeholder("http://localhost:11434/v1")
 	})
-	ui.Field(c, "接口协议", func() {
+	ui.Field(c, locales.EndpointsAPI(), func() {
 		labels := make([]string, len(engine.CustomAPIs))
 		current := ""
 		for i, api := range engine.CustomAPIs {
@@ -465,18 +474,18 @@ func (a *App) endpointFields(c *ui.Context, f *endpointForm) {
 			}
 		}
 	})
-	keyHint := "本地服务通常无需密钥，可留空"
+	keyHint := locales.EndpointsKeyHintLocal()
 	if f.editing != "" {
-		keyHint = "留空则保持现有密钥"
+		keyHint = locales.EndpointsKeyHintKeep()
 	}
 	ui.Field(c, "API Key", func() {
 		ui.TextInput(c.Key("ep-key"), &f.key).Password().Placeholder(keyHint)
 	})
-	ui.Field(c, "模型", func() {
+	ui.Field(c, locales.EndpointsModels(), func() {
 		ui.Column(c).Gap(6).Children(func() {
-			ui.TextArea(c.Key("ep-models"), &f.models).Lines(3, 6).Placeholder("每行一个模型 ID，例如 llama3.2")
+			ui.TextArea(c.Key("ep-models"), &f.models).Lines(3, 6).Placeholder(locales.EndpointsModelsPlaceholder())
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				fetch := ui.Button(c.Key("ep-fetch"), "从服务获取模型列表").Disabled(f.fetching || !strings.HasPrefix(f.baseURL, "http"))
+				fetch := ui.Button(c.Key("ep-fetch"), locales.EndpointsFetchModels()).Disabled(f.fetching || !strings.HasPrefix(f.baseURL, "http"))
 				if fetch.Clicked() {
 					a.fetchModels(f)
 				}
@@ -504,9 +513,9 @@ func (a *App) fetchModels(f *endpointForm) {
 			f.fetching = false
 			switch {
 			case err != nil:
-				f.err = "获取模型列表失败: " + err.Error()
+				f.err = locales.EndpointsFetchFailed(err.Error())
 			case len(ids) == 0:
-				f.err = "服务没有返回模型"
+				f.err = locales.EndpointsNoModels()
 			default:
 				f.models = strings.Join(ids, "\n")
 			}
@@ -527,7 +536,7 @@ func (a *App) saveEndpoint(f *endpointForm) {
 				return
 			}
 			f.open = false
-			a.settings.toast = "已保存端点 " + orDash(cp.Name)
+			a.settings.toast = locales.EndpointsSaved(orDash(cp.Name))
 			a.Refresh()
 		})
 	}()
@@ -539,9 +548,30 @@ func (a *App) generalPage(c *ui.Context, p palette) {
 
 func (a *App) generalFields(c *ui.Context, p palette) {
 	t := c.Theme()
-	ui.Field(c, "默认模型", func() {
+	ui.Field(c, locales.GeneralLanguage(), func() {
+		// "" follows the system's language; the others are named in
+		// themselves, as "English" and "简体中文".
+		tags := append([]string{""}, i18n.Languages()...)
+		labels := make([]string, len(tags))
+		current := ""
+		for i, tag := range tags {
+			labels[i] = locales.GeneralLanguageSystem()
+			if tag != "" {
+				labels[i] = i18n.Autonym(tag)
+			}
+			if tag == a.prefs.Language {
+				current = labels[i]
+			}
+		}
+		if ui.Select(c.Key("language"), &current, labels).Width(360).Changed() {
+			if i := slices.Index(labels, current); i >= 0 {
+				a.setLanguage(tags[i])
+			}
+		}
+	}).Description(locales.GeneralLanguageDescription())
+	ui.Field(c, locales.GeneralDefaultModel(), func() {
 		if len(a.models) == 0 {
-			ui.Text(c, "尚未连接模型").TextColor(t.TextMuted)
+			ui.Text(c, locales.GeneralNoModel()).TextColor(t.TextMuted)
 			return
 		}
 		labels := make([]string, len(a.models))
@@ -557,41 +587,54 @@ func (a *App) generalFields(c *ui.Context, p palette) {
 			if i := slices.Index(labels, current); i >= 0 {
 				m := a.models[i]
 				a.setDefaultModel(m)
-				a.settings.toast = "新对话将使用 " + m.Name
+				a.settings.toast = locales.GeneralNewChatsUse(m.Name)
 			}
 		}
-	}).Description("新对话默认使用的模型，与 pig 命令行共用 settings.json")
-	ui.Field(c, "工具权限", func() {
+	}).Description(locales.GeneralDefaultModelDescription())
+	ui.Field(c, locales.GeneralTools(), func() {
 		mode := "read"
 		if a.prefs.FullTools {
 			mode = "full"
 		}
 		ui.RadioGroup(c, func() {
-			ui.Radio(c, &mode, "read", "只读：读取、搜索和列出文件")
-			ui.Radio(c, &mode, "full", "完整：还可以编辑、写入文件和执行命令")
+			ui.Radio(c, &mode, "read", locales.GeneralToolsReadOnly())
+			ui.Radio(c, &mode, "full", locales.GeneralToolsFull())
 		})
 		if full := mode == "full"; full != a.prefs.FullTools {
 			a.prefs.FullTools = full
 			a.savePrefs()
 		}
-	}).Description("对新对话生效。Pi 执行工具前不会逐次确认，开启完整权限请选择可信的工作目录。")
-	ui.Field(c, "工作目录", func() {
+	}).Description(locales.GeneralToolsDescription())
+	ui.Field(c, locales.GeneralWorkingDirectory(), func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, shortPath(a.eng.CWD())).Font("monospace").FontSize(12).SingleLine().Grow(1).MinWidth(0)
-			if ui.Button(c, "选择…").Clicked() {
+			if ui.Button(c, locales.GeneralChoose()).Clicked() {
 				a.chooseFolder(false)
 			}
 		})
-	}).Description("新对话的工作目录；已开始的对话继续在各自的目录中工作")
-	ui.Field(c, "配置目录", func() {
+	}).Description(locales.GeneralWorkingDirectoryDescription())
+	ui.Field(c, locales.GeneralConfigDirectory(), func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, shortPath(a.eng.AgentDir())).Font("monospace").FontSize(12).SingleLine().Grow(1).MinWidth(0)
-			if a.host.Reveal != nil && ui.Button(c, "打开").Clicked() {
+			if a.host.Reveal != nil && ui.Button(c, locales.CommonOpen()).Clicked() {
 				a.host.Reveal(a.eng.AgentDir())
 			}
 		})
-	}).Description("auth.json、models.json、settings.json 与会话记录，与 pig 命令行共用")
-	ui.Text(c, "引擎 PiG v0.5.1 · 界面 MyGo v0.6.2").FontSize(12).TextColor(t.TextMuted).Margin(12, 0, 0, 0)
+	}).Description(locales.GeneralConfigDirectoryDescription())
+	ui.Field(c, locales.GeneralDataFile(), func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			path := a.db.Path()
+			if path == "" {
+				ui.Text(c, locales.GeneralDataFileInMemory()).FontSize(12).TextColor(t.TextMuted).Grow(1)
+				return
+			}
+			ui.Text(c, shortPath(path)).Font("monospace").FontSize(12).SingleLine().Grow(1).MinWidth(0)
+			if a.host.Reveal != nil && ui.Button(c.Key("reveal-db"), locales.CommonOpen()).Label(locales.GeneralRevealDataFile()).Clicked() {
+				a.host.Reveal(filepath.Dir(path))
+			}
+		})
+	}).Description(locales.GeneralDataFileDescription())
+	ui.Text(c, locales.GeneralVersions()).FontSize(12).TextColor(t.TextMuted).Margin(12, 0, 0, 0)
 }
 
 // OAuth sign-ins by their friendly names.
@@ -606,15 +649,15 @@ var oauthNames = map[string]string{
 	"radius":         "Radius",
 }
 
-var oauthDescs = map[string]string{
-	"openai":         "ChatGPT Plus / Pro / Team 订阅",
-	"anthropic":      "Claude Pro / Max 订阅",
-	"github-copilot": "Copilot 订阅，设备码登录",
-	"xai":            "SuperGrok 或 X Premium 订阅",
-	"kimi-coding":    "Kimi 编程订阅",
-	"meta":           "Meta Muse 订阅",
-	"openrouter":     "授权 OpenRouter 账户，按量计费",
-	"radius":         "Radius 网关账户",
+var oauthDescs = map[string]func() string{
+	"openai":         locales.AccountsDescOpenAI,
+	"anthropic":      locales.AccountsDescAnthropic,
+	"github-copilot": locales.AccountsDescCopilot,
+	"xai":            locales.AccountsDescXAI,
+	"kimi-coding":    locales.AccountsDescKimi,
+	"meta":           locales.AccountsDescMeta,
+	"openrouter":     locales.AccountsDescOpenRouter,
+	"radius":         locales.AccountsDescRadius,
 }
 
 func oauthName(id string) string {
@@ -625,8 +668,8 @@ func oauthName(id string) string {
 }
 
 func oauthDesc(pr engine.Provider) string {
-	if s := oauthDescs[pr.ID]; s != "" {
-		return s
+	if desc := oauthDescs[pr.ID]; desc != nil {
+		return desc()
 	}
 	if pr.OAuth != nil {
 		return pr.OAuth.Name

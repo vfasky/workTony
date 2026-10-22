@@ -5,6 +5,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,19 +16,53 @@ import (
 
 	"worktony/internal/app"
 	"worktony/internal/engine"
+	"worktony/internal/store"
+	"worktony/locales"
 )
 
 const titleBarHeight = 52
 
 func main() {
-	mygo.App.SetLanguages(app.Locale)
+	// The app's languages are its catalogs': English and Simplified
+	// Chinese (package locales).
+	//
+	// A development build, as mygo dev makes, is "WorkTony Debug", and runs
+	// once: mygo dev quits the running build before it starts the next, and
+	// a second launch, as of a second mygo dev, hands over to the first and
+	// quits, which ends that mygo dev too.
+	debug := mygo.IsDev()
+	name := "WorkTony"
+	if debug {
+		name += " Debug"
+		mygo.App.SetName(name)
+		if !mygo.App.RequestSingleInstanceLock() {
+			log.Println(name + " is running already: showing it")
+			return
+		}
+	}
 	eng, err := engine.Open(engine.Options{})
 	if err != nil {
 		log.Fatal(err)
 	}
-	prefsPath := ""
+	// The app's settings and projects are in SQLite, in the system's
+	// configuration directory: the debug build keeps its own apart from the
+	// installed app's. Without the directory, or the database, they live in
+	// memory, and the chat window says so.
+	var db *store.Store
+	dbErr := errors.New(locales.AppNoConfigDir())
 	if dir, err := os.UserConfigDir(); err == nil {
-		prefsPath = filepath.Join(dir, "WorkTony", "prefs.json")
+		db, dbErr = store.Open(filepath.Join(dir, name, "worktony.db"))
+		if dbErr == nil {
+			if err := app.ImportPrefs(db, filepath.Join(dir, name, "prefs.json")); err != nil {
+				log.Printf("import prefs.json: %v", err)
+			}
+		}
+	}
+	if dbErr != nil {
+		log.Printf("open database: %v", dbErr)
+		if db, err = store.Open(""); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	// The windows, which goroutines posting to the main thread read too.
@@ -66,16 +101,23 @@ func main() {
 		PostChat:     post,
 		OpenSettings: func(page string) { openSettings(page) },
 		ChooseFolder: func() string {
-			paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: chatWin.Load(), Title: "选择工作目录", Directory: true, CreateDirectories: true})
+			paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: chatWin.Load(), Title: locales.AppChooseFolder(), Directory: true, CreateDirectories: true})
 			if err != nil || len(paths) == 0 {
 				return ""
 			}
 			return paths[0]
 		},
+		Debug:   debug,
 		OpenURL: func(url string) { _ = mygo.Shell.OpenExternal(url) },
 		Reveal:  func(path string) { _ = mygo.Shell.OpenPath(path) },
+		// MyGo keeps the language too; the database's choice wins.
+		SetLocale: mygo.App.SetLocale,
 	}
-	a = app.New(eng, host, prefsPath)
+	a = app.New(eng, host, db)
+	mygo.App.SetLocale(a.Language())
+	if dbErr != nil {
+		a.Notice(locales.AppDataFileUnavailable(dbErr.Error()))
+	}
 
 	openSettings = func(page string) {
 		a.ShowSettingsPage(page)
@@ -86,7 +128,7 @@ func main() {
 			return
 		}
 		w := mygo.NewWindow(mygo.WindowOptions{
-			Title:          "设置",
+			Title:          locales.AppSettingsWindowTitle(name),
 			Width:          860,
 			Height:         620,
 			MinWidth:       680,
@@ -107,7 +149,7 @@ func main() {
 			return
 		}
 		w := mygo.NewWindow(mygo.WindowOptions{
-			Title:          "WorkTony",
+			Title:          name,
 			Width:          1100,
 			Height:         740,
 			MinWidth:       720,
@@ -122,26 +164,42 @@ func main() {
 		w.OnClosed(func() { chatWin.Store(nil) })
 	}
 
-	mygo.App.WhenReady(func() {
-		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
+	// menu is the menu bar in the language the app shows; the items of a
+	// role say theirs themselves.
+	menu := func() *mygo.Menu {
+		return mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu},
-			{Label: "文件", Submenu: []*mygo.MenuItem{
-				{Label: "新对话", Accelerator: "CmdOrCtrl+N", Click: func(*mygo.MenuItem, *mygo.Window) {
+			{Label: locales.MenuFile(), Submenu: []*mygo.MenuItem{
+				{Label: locales.MenuNewChat(), Accelerator: "CmdOrCtrl+N", Click: func(*mygo.MenuItem, *mygo.Window) {
 					openChat()
 					a.NewChat()
 					redraw()
 				}},
-				{Label: "设置…", Accelerator: "CmdOrCtrl+,", Click: func(*mygo.MenuItem, *mygo.Window) { openSettings("") }},
+				{Label: locales.MenuSettings(), Accelerator: "CmdOrCtrl+,", Click: func(*mygo.MenuItem, *mygo.Window) { openSettings("") }},
 				mygo.Separator(),
 				{Role: mygo.RoleClose},
 			}},
 			{Role: mygo.RoleEditMenu},
 			{Role: mygo.RoleViewMenu},
 			{Role: mygo.RoleWindowMenu},
-		}))
+		})
+	}
+	// The windows of native UI draw anew in another language; what was set
+	// once, the menu and the settings window's title, is set again.
+	mygo.App.OnLocaleChanged(func(string) {
+		mygo.App.SetMenu(menu())
+		if w := settingsWin.Load(); w != nil {
+			w.SetTitle(locales.AppSettingsWindowTitle(name))
+		}
+	})
+
+	mygo.App.WhenReady(func() {
+		mygo.App.SetMenu(menu())
 		openChat()
 		a.Refresh()
 	})
+	// Another launch of the debug build shows this one's chat.
+	mygo.App.OnSecondInstance(func([]string, string) { mygo.RunOnMain(openChat) })
 	// Clicking the Dock icon with no window open shows the chat again.
 	mygo.App.OnActivate(func(hasVisibleWindows bool) {
 		if !hasVisibleWindows {
@@ -153,4 +211,5 @@ func main() {
 	}
 	a.Close()
 	eng.Close()
+	db.Close()
 }

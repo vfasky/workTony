@@ -14,6 +14,8 @@ import (
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/coding"
+
+	"worktony/locales"
 )
 
 // Options configures an Engine.
@@ -23,19 +25,23 @@ type Options struct {
 	AgentDir string
 	// CWD is the working directory chats start in. Empty is the user's home.
 	CWD string
+	// OpenURL opens a page in the browser, as the sign-in page of an MCP
+	// server. Nil opens none.
+	OpenURL func(url string)
 }
 
 // Engine is the process-wide PiG host. Its methods are safe for concurrent
 // use.
 type Engine struct {
 	agentDir string
+	openURL  func(url string)
+	plugins  pluginSet
 
 	mu   sync.Mutex
 	cwd  string
 	svcs *coding.AgentSessionServices
-	rt   *coding.Runtime
-	// retired are the services and runtimes of earlier working
-	// directories, which chats started there still use.
+	// retired are the services of earlier working directories, which
+	// chats started there still use.
 	retired []func()
 
 	// modelsMu orders the changes of models.json.
@@ -46,7 +52,7 @@ type Engine struct {
 	nextID      int
 }
 
-// Open creates the services and runtime.
+// Open creates the services.
 func Open(opts Options) (*Engine, error) {
 	agentDir := opts.AgentDir
 	if agentDir == "" {
@@ -59,7 +65,7 @@ func Open(opts Options) (*Engine, error) {
 	if err := os.MkdirAll(agentDir, 0o700); err != nil {
 		return nil, err
 	}
-	e := &Engine{agentDir: agentDir, listeners: map[int]func(){}}
+	e := &Engine{agentDir: agentDir, openURL: opts.OpenURL, listeners: map[int]func(){}}
 	if err := e.load(cwd); err != nil {
 		return nil, err
 	}
@@ -71,17 +77,12 @@ func (e *Engine) load(cwd string) error {
 	if err != nil {
 		return err
 	}
-	rt, err := coding.NewRuntime(coding.RuntimeOptions{Services: svcs})
-	if err != nil {
-		svcs.Close()
-		return err
-	}
 	svcs.ModelRuntime().SetChangeListener(e.notify)
-	e.cwd, e.svcs, e.rt = cwd, svcs, rt
+	e.cwd, e.svcs = cwd, svcs
 	return nil
 }
 
-// Close releases the runtime and services. Close chats first.
+// Close releases the services. Close chats first.
 func (e *Engine) Close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -92,17 +93,14 @@ func (e *Engine) Close() {
 	e.retired = nil
 }
 
-// retire moves the current services and runtime to the retired list.
+// retire moves the current services to the retired list.
 func (e *Engine) retire() {
-	svcs, rt := e.svcs, e.rt
+	svcs := e.svcs
 	if svcs == nil {
 		return
 	}
-	e.retired = append(e.retired, func() {
-		_ = rt.Close()
-		svcs.Close()
-	})
-	e.rt, e.svcs = nil, nil
+	e.retired = append(e.retired, svcs.Close)
+	e.svcs = nil
 }
 
 // AgentDir is where PiG keeps its configuration.
@@ -123,19 +121,19 @@ func (e *Engine) SetCWD(dir string) error {
 		return err
 	}
 	if !info.IsDir() {
-		return errors.New("不是文件夹: " + dir)
+		return errors.New(locales.ErrNotAFolder(dir))
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if dir == e.cwd {
 		return nil
 	}
-	svcs, rt, cwd := e.svcs, e.rt, e.cwd
+	svcs, cwd := e.svcs, e.cwd
 	e.retire()
 	if err := e.load(dir); err != nil {
 		// Keep the previous directory.
 		e.retired = e.retired[:len(e.retired)-1]
-		e.svcs, e.rt, e.cwd = svcs, rt, cwd
+		e.svcs, e.cwd = svcs, cwd
 		return err
 	}
 	go e.notify()
@@ -251,7 +249,7 @@ func (e *Engine) DefaultModel() string {
 func (e *Engine) SetDefaultModel(ref string) error {
 	provider, model, ok := strings.Cut(ref, "/")
 	if !ok {
-		return errors.New("模型格式应为 provider/id: " + ref)
+		return errors.New(locales.ErrModelRef(ref))
 	}
 	return e.services().SettingsManager().SetDefaultModelAndProvider(provider, model)
 }

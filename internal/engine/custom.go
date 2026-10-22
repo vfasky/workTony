@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/MichaelKinsy/PiG/ai"
+
+	"worktony/locales"
 )
 
 // CustomProvider is an endpoint the user added in models.json, as a local
@@ -67,11 +69,11 @@ func (e *Engine) readModels() (*modelsFile, error) {
 		return nil, err
 	}
 	if err := json.Unmarshal(b, &f.rest); err != nil {
-		return nil, fmt.Errorf("models.json 不是有效的 JSON: %w", err)
+		return nil, fmt.Errorf("%s: %w", locales.ErrModelsJSONInvalid(), err)
 	}
 	if raw, ok := f.rest["providers"]; ok {
 		if err := json.Unmarshal(raw, &f.providers); err != nil {
-			return nil, fmt.Errorf("models.json 的 providers 无效: %w", err)
+			return nil, fmt.Errorf("%s: %w", locales.ErrModelsJSONProviders(), err)
 		}
 	}
 	return f, nil
@@ -169,13 +171,13 @@ func (e *Engine) SaveCustomProvider(ctx context.Context, p CustomProvider, apiKe
 	p.ID = strings.TrimSpace(strings.ToLower(p.ID))
 	p.BaseURL = strings.TrimRight(strings.TrimSpace(p.BaseURL), "/")
 	if !providerIDPattern.MatchString(p.ID) {
-		return errors.New("ID 只能包含小写字母、数字、点、下划线和连字符")
+		return errors.New(locales.ErrEndpointID())
 	}
 	if !strings.HasPrefix(p.BaseURL, "http://") && !strings.HasPrefix(p.BaseURL, "https://") {
-		return errors.New("Base URL 需以 http:// 或 https:// 开头")
+		return errors.New(locales.ErrEndpointURL())
 	}
 	if !slices.ContainsFunc(CustomAPIs, func(a CustomAPI) bool { return a.ID == p.API }) {
-		return errors.New("请选择接口协议")
+		return errors.New(locales.ErrEndpointAPI())
 	}
 	var models []string
 	for _, m := range p.Models {
@@ -184,7 +186,7 @@ func (e *Engine) SaveCustomProvider(ctx context.Context, p CustomProvider, apiKe
 		}
 	}
 	if len(models) == 0 {
-		return errors.New("至少添加一个模型 ID")
+		return errors.New(locales.ErrEndpointModels())
 	}
 	key := strings.TrimSpace(apiKey)
 	creds := e.services().Credentials()
@@ -193,7 +195,7 @@ func (e *Engine) SaveCustomProvider(ctx context.Context, p CustomProvider, apiKe
 		if entry == nil {
 			for _, known := range e.services().ModelRuntime().GetProviders() {
 				if known.ID == p.ID {
-					return fmt.Errorf("%q 是内置服务商，请换一个 ID", p.ID)
+					return errors.New(locales.ErrEndpointBuiltIn(p.ID))
 				}
 			}
 			entry = map[string]any{}
@@ -290,7 +292,7 @@ func FetchModelIDs(ctx context.Context, baseURL, apiKey string) ([]string, error
 	}
 	defer res.Body.Close()
 	if res.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("服务返回 %s", res.Status)
+		return nil, errors.New(locales.ErrServiceStatus(res.Status))
 	}
 	var body struct {
 		Data []struct {
@@ -301,7 +303,7 @@ func FetchModelIDs(ctx context.Context, baseURL, apiKey string) ([]string, error
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("无法解析模型列表: %w", err)
+		return nil, fmt.Errorf("%s: %w", locales.ErrModelList(), err)
 	}
 	var ids []string
 	for _, m := range body.Data {

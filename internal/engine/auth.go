@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/MichaelKinsy/PiG/ai"
+
+	"worktony/locales"
 )
 
 // Credential kinds a provider can be signed in with.
@@ -187,7 +189,7 @@ func (in Interaction) native() ai.AuthInteraction {
 	return ai.AuthInteraction{
 		Prompt: func(ctx context.Context, p ai.AuthPrompt) (string, error) {
 			if in.Prompt == nil {
-				return "", errors.New("此登录方式需要输入")
+				return "", errors.New(locales.ErrLoginNeedsInput())
 			}
 			return in.Prompt(ctx, promptOf(p))
 		},
@@ -239,7 +241,12 @@ func noticeOf(ev ai.AuthEvent) Notice {
 // answering its prompts through in, and saves the credential to auth.json.
 // It blocks until the sign-in finishes, fails or ctx ends.
 func (e *Engine) Login(ctx context.Context, providerID string, kind ai.CredentialType, in Interaction) error {
-	_, err := e.services().ModelRuntime().Login(ctx, providerID, kind, in.native())
+	svcs := e.services()
+	// Sign in with ChatGPT sends the installation's device ID as its agent
+	// host ID and fails without one. It is created on first use and kept in
+	// the global settings, as PiG's own CLI does.
+	opts := ai.LoginOptions{GetDeviceID: svcs.SettingsManager().GetOrCreateDeviceID}
+	_, err := svcs.ModelRuntime().Login(ctx, providerID, kind, in.native(), opts)
 	if err == nil {
 		e.notify()
 	}
@@ -252,7 +259,7 @@ func (e *Engine) Login(ctx context.Context, providerID string, kind ai.Credentia
 func (e *Engine) SaveAPIKey(ctx context.Context, providerID, key string, in Interaction) error {
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return errors.New("请输入 API Key")
+		return errors.New(locales.ErrEnterAPIKey())
 	}
 	used := false
 	ask := in.Prompt
